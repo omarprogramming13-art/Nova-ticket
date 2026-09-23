@@ -81,19 +81,91 @@ class TicketBot(commands.Bot):
                 tickets = db.get_all_tickets()
                 now = datetime.utcnow()
                 for t in tickets:
-                    if t["status"] == "open" and t.get("last_staff_message_at") and not t.get("member_responded"):
-                        last_reply = datetime.fromisoformat(t["last_staff_message_at"])
-                        diff = (now - last_reply).total_seconds()
-                        if diff >= 3600: # 1 hour
-                            channel = self.get_channel(t["channel_id"])
-                            if channel:
-                                embed = EmbedBuilder.create_embed(
-                                    title="⏲️ تنبيه عدم الرد",
-                                    description="مرحباً، لقد قامت الإدارة بالرد على تذكرتك منذ فترة ولم نتلقَ أي رد منك.\nيرجى الرد لتجنب إغلاق التذكرة آلياً.",
-                                    color=EmbedBuilder.COLOR_WARNING
-                                )
-                                await channel.send(embed=embed)
-                                db.set_member_responded(t["channel_id"]) # Mark as reminded
+                    # Only check active open tickets
+                    if t.get("status") != "open":
+                        continue
+
+                    last_staff = t.get("last_staff_message_at")
+                    if not last_staff:
+                        continue
+
+                    try:
+                        last_reply = datetime.fromisoformat(last_staff)
+                        diff_sec = (now - last_reply).total_seconds()
+                    except Exception:
+                        continue
+
+                    channel_id = t.get("channel_id")
+                    channel = self.get_channel(channel_id)
+                    if not channel:
+                        continue
+
+                    member_resp = t.get("member_responded", 1)
+
+                    # Stage 1: Send inactivity warning after 12 hours (43200 seconds) without member response
+                    if member_resp == 0 and diff_sec >= 43200:
+                        user_mention = f"<@{t.get('user_id')}>" if t.get("user_id") else ""
+                        embed = EmbedBuilder.create_embed(
+                            title="⏲️ تنبيه عدم الرد وتحديث التذكرة",
+                            description=(
+                                f"مرحباً {user_mention} 👋،\n"
+                                f"نود تذكيرك بأن طاقم الدعم الفني بانتظار ردك وتوضيحك منذ أكثر من 12 ساعة.\n\n"
+                                f"⚠️ **تنبيه:** في حال عدم الرد خلال 12 ساعة إضافية، سيتم **إغلاق التذكرة آلياً** لحفظ تنظيم التذاكر.\n"
+                                f"إذا كانت المشكلة قد حُلت، يمكنك تركها أو إغلاقها مباشرة."
+                            ),
+                            color=EmbedBuilder.COLOR_WARNING
+                        )
+                        try:
+                            await channel.send(content=user_mention, embed=embed)
+                            db.mark_inactivity_warning(channel_id)
+                        except Exception as warn_err:
+                            logger.error(f"Failed to send inactivity warning to channel {channel_id}: {warn_err}")
+
+                    # Stage 2: Auto-close ticket after 24 hours (86400 seconds) total inactivity
+                    elif member_resp == 2 and diff_sec >= 86400:
+                        try:
+                            # 1. Update status in DB
+                            db.update_ticket_status(channel_id, "closed")
+
+                            # 2. Lock member permissions in channel
+                            user_id = t.get("user_id")
+                            if user_id and channel.guild:
+                                guild_member = channel.guild.get_member(user_id)
+                                if guild_member:
+                                    try:
+                                        await channel.set_permissions(guild_member, view_channel=True, send_messages=False)
+                                    except Exception:
+                                        pass
+
+                            # 3. Notify channel
+                            close_embed = EmbedBuilder.create_embed(
+                                title="🔒 إغلاق التذكرة آلياً (عدم نشاط)",
+                                description=(
+                                    f"تم إغلاق هذه التذكرة تلقائياً نظراً لمرور أكثر من 24 ساعة دون أي رد من العميل بعد رد موظف الدعم.\n\n"
+                                    f"إذا كنت لا تزال بحاجة للمساعدة، يسعدنا دائماً فتح تذكرة جديدة من لوحة الدعم الفني! 🌸"
+                                ),
+                                color=EmbedBuilder.COLOR_DANGER
+                            )
+                            await channel.send(embed=close_embed)
+
+                            # 4. Generate Transcript
+                            try:
+                                from bot.utils.transcript_generator import TranscriptGenerator
+                                await TranscriptGenerator.send_transcript(channel, t, channel.guild)
+                            except Exception as tr_err:
+                                logger.error(f"Error generating transcript on auto-close: {tr_err}")
+
+                            # 5. Log audit action
+                            await TicketLogger.log_action(
+                                guild=channel.guild,
+                                ticket=t,
+                                action_name="إغلاق آلي (عدم النشاط)",
+                                executor=self.user,
+                                details="تم الإغلاق التلقائي بعد تجاوز 24 ساعة بدون رد من العميل"
+                            )
+                        except Exception as close_err:
+                            logger.error(f"Failed to auto-close inactive ticket channel {channel_id}: {close_err}")
+
             except Exception as e:
                 logger.error(f"Error in inactivity check: {e}")
             await asyncio.sleep(600) # Check every 10 minutes

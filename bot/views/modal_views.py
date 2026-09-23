@@ -17,7 +17,15 @@ class TransferTicketModal(Modal):
             required=True,
             max_length=100
         )
+        self.reason_input = TextInput(
+            label="سبب التحويل / النقل (اختياري)",
+            placeholder="مثال: بحاجة لمختص بالبرمجة أو عدم التواجد",
+            style=discord.TextStyle.short,
+            required=False,
+            max_length=200
+        )
         self.add_item(self.staff_input)
+        self.add_item(self.reason_input)
 
     async def on_submit(self, interaction: discord.Interaction):
         val = self.staff_input.value.strip().replace("<@", "").replace(">", "").replace("!", "")
@@ -28,7 +36,12 @@ class TransferTicketModal(Modal):
             target_member = None
 
         if not target_member:
-            return await interaction.response.send_message("❌ لم يتم العثور على الموظف المحدد.", ephemeral=True)
+            return await interaction.response.send_message("❌ لم يتم العثور على الموظف المحدد في السيرفر.", ephemeral=True)
+
+        if target_member.bot:
+            return await interaction.response.send_message("❌ لا يمكنك تحويل التذكرة إلى بوت.", ephemeral=True)
+
+        transfer_reason = self.reason_input.value.strip() if self.reason_input.value else "بدون سبب محدد"
 
         db.claim_ticket(interaction.channel_id, target_member.id)
         db.increment_staff_tickets(interaction.guild_id, target_member.id)
@@ -37,30 +50,93 @@ class TransferTicketModal(Modal):
         if self.ticket and self.ticket.get("category_points"):
             db.update_staff_points(interaction.guild_id, target_member.id, self.ticket.get("category_points", 0))
         
+        # Update channel permissions for the new staff member
+        try:
+            overwrites = interaction.channel.overwrites
+            # Remove previous claimer specific overwrite if different
+            old_claimed_id = self.ticket.get("claimed_by")
+            if old_claimed_id and old_claimed_id != target_member.id:
+                old_member = interaction.guild.get_member(old_claimed_id)
+                if old_member and old_member in overwrites:
+                    del overwrites[old_member]
+            
+            overwrites[target_member] = discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                attach_files=True,
+                embed_links=True,
+                manage_messages=True
+            )
+            await interaction.channel.edit(overwrites=overwrites)
+        except Exception as perm_err:
+            print(f"Error updating channel overwrites on transfer: {perm_err}")
+
         embed = EmbedBuilder.create_embed(
-            title="🔄 تم نقل التذكرة",
-            description=f"تم نقل التذكرة بنجاح إلى الموظف {target_member.mention} بواسطة {interaction.user.mention}.",
+            title="🔄 تم تحويل واستلام التذكرة",
+            description=(
+                f"تم تحويل التذكرة بنجاح إلى الموظف {target_member.mention} بواسطة {interaction.user.mention}.\n\n"
+                f"📌 **سبب التحويل:** `{transfer_reason}`"
+            ),
             color=EmbedBuilder.COLOR_INFO
         )
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(content=f"{target_member.mention}", embed=embed)
 
         await TicketLogger.log_action(
             guild=interaction.guild,
             ticket=self.ticket,
-            action_name="نقل التذكرة",
+            action_name="تحويل التذكرة",
             executor=interaction.user,
-            details=f"تم النقل إلى الموظف: {target_member.display_name} ({target_member.id})"
+            details=f"تم النقل إلى: {target_member.display_name} ({target_member.id}) | السبب: {transfer_reason}"
         )
+
+class PrioritySelectView(discord.ui.View):
+    def __init__(self, ticket: dict, lang: str = "ar"):
+        super().__init__(timeout=60)
+        self.ticket = ticket
+        self.lang = lang
+
+    async def _set_priority(self, interaction: discord.Interaction, priority_name: str, color: int):
+        db.update_priority(interaction.channel_id, priority_name)
+        embed = EmbedBuilder.create_embed(
+            title="⚡ تم تحديث الأولوية",
+            description=f"تم تغيير أولوية التذكرة إلى: **{priority_name}** بنجاح بواسطة {interaction.user.mention}.",
+            color=color
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+
+        await TicketLogger.log_action(
+            guild=interaction.guild,
+            ticket=self.ticket,
+            action_name="تغيير الأولوية",
+            executor=interaction.user,
+            details=f"الأولوية الجديدة: {priority_name}"
+        )
+
+    @discord.ui.button(label="عاجلة (Urgent) 🔴", style=discord.ButtonStyle.danger)
+    async def urgent_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._set_priority(interaction, "عاجلة (Urgent) 🔴", EmbedBuilder.COLOR_DANGER)
+
+    @discord.ui.button(label="عالية (High) 🟠", style=discord.ButtonStyle.primary)
+    async def high_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._set_priority(interaction, "عالية (High) 🟠", EmbedBuilder.COLOR_WARNING)
+
+    @discord.ui.button(label="متوسطة (Medium) 🟡", style=discord.ButtonStyle.secondary)
+    async def medium_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._set_priority(interaction, "متوسطة (Medium) 🟡", EmbedBuilder.COLOR_INFO)
+
+    @discord.ui.button(label="منخفضة (Low) 🟢", style=discord.ButtonStyle.success)
+    async def low_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._set_priority(interaction, "منخفضة (Low) 🟢", EmbedBuilder.COLOR_SUCCESS)
 
 class ChangePriorityModal(Modal):
     def __init__(self, ticket: dict, lang: str = "ar"):
-        super().__init__(title="⚡ تغيير أولوية التذكرة")
+        super().__init__(title="⚡ تغيير أولوية ووسم التذكرة")
         self.ticket = ticket
         self.lang = lang
 
         self.priority_input = TextInput(
-            label="الأولوية (منخفضة / متوسطة / عالية / عاجلة)",
-            placeholder="مثال: عالية (High)",
+            label="الأولوية والوسم (منخفضة / متوسطة / عالية / عاجلة)",
+            placeholder="مثال: عاجلة (Urgent) أو VIP أو مشكلة تقنية حرجة",
             required=True,
             max_length=50
         )
@@ -71,7 +147,7 @@ class ChangePriorityModal(Modal):
         db.update_priority(interaction.channel_id, p_val)
 
         embed = EmbedBuilder.create_embed(
-            title="⚡ تم تحديث الأولوية",
+            title="⚡ تم تحديث الأولوية والوسم",
             description=get_text("priority_updated", self.lang, priority=p_val),
             color=EmbedBuilder.COLOR_WARNING
         )

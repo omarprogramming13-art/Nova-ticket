@@ -8,27 +8,44 @@ class StatsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="ticket_stats", description="View ticket system statistics / إحصائيات التذاكر")
+    @app_commands.command(name="ticket_stats", description="View ticket system statistics / إحصائيات وتقارير التذاكر المتقدمة")
     async def ticket_stats(self, interaction: discord.Interaction):
         stats = db.get_statistics()
         
         embed = EmbedBuilder.create_embed(
-            title="📊 Ticket System Performance & Stats",
-            description="Overview of ticket volumes, closure rates, and support staff performance.",
+            title="📊 تقرير وأداء نظام التذاكر (Ticket System Analytics)",
+            description="نظرة شاملة ودقيقة على حركة التذاكر، سرعة الاستجابة، وتقييم أداء الطاقم الإداري.",
             color=EmbedBuilder.COLOR_PRIMARY
         )
-        embed.add_field(name="🎫 Total Tickets Opened", value=str(stats["total_tickets"]), inline=True)
-        embed.add_field(name="🟢 Currently Open", value=str(stats["open_tickets"]), inline=True)
-        embed.add_field(name="🔴 Closed Tickets", value=str(stats["closed_tickets"]), inline=True)
-        embed.add_field(name="⭐ Average Customer Rating", value=f"{stats['average_rating']} / 5.0", inline=False)
+        embed.add_field(name="🎫 إجمالي التذاكر", value=f"**{stats['total_tickets']}** تذكرة", inline=True)
+        embed.add_field(name="🟢 تذاكر مفتوحة حالياً", value=f"**{stats['open_tickets']}**", inline=True)
+        embed.add_field(name="🔴 تذاكر مغلقة ومنجزة", value=f"**{stats['closed_tickets']}**", inline=True)
+        
+        # Performance metrics
+        avg_resp = stats.get("avg_response_minutes", 0.0)
+        avg_resp_str = f"**{avg_resp}** دقيقة" if avg_resp > 0 else "غير محدد بعد"
+        embed.add_field(name="⚡ متوسط سرعة أول رد", value=avg_resp_str, inline=True)
+
+        avg_res = stats.get("avg_resolution_hours", 0.0)
+        avg_res_str = f"**{avg_res}** ساعة" if avg_res > 0 else "غير محدد بعد"
+        embed.add_field(name="⏳ متوسط مدة إنهاء التذكرة", value=avg_res_str, inline=True)
+
+        embed.add_field(name="⭐ متوسط تقييم العملاء", value=f"**{stats['average_rating']} / 5.0**", inline=True)
+
+        # Priority breakdown
+        p_breakdown = stats.get("priority_breakdown", {})
+        if p_breakdown:
+            p_lines = [f"• **{k}:** `{v}` تذكرة" for k, v in p_breakdown.items() if k]
+            if p_lines:
+                embed.add_field(name="⚡ تصنيف الأولويات:", value="\n".join(p_lines[:5]), inline=False)
 
         top_staff_str = ""
         for s in stats["top_staff"]:
             user_mention = f"<@{s['staff_id']}>"
-            top_staff_str += f"• {user_mention}: {round(s['avg_stars'], 2)} ⭐ ({s['total_ratings']} ratings)\n"
+            top_staff_str += f"• {user_mention}: {round(s['avg_stars'], 2)} ⭐ ({s['total_ratings']} تقييم)\n"
 
         if top_staff_str:
-            embed.add_field(name="🏆 Top Support Staff", value=top_staff_str, inline=False)
+            embed.add_field(name="🏆 أفضل موظفي الدعم الفني:", value=top_staff_str, inline=False)
 
         await interaction.response.send_message(embed=embed)
 

@@ -9,7 +9,7 @@ from bot.utils.embeds import EmbedBuilder
 from bot.utils.transcript_generator import TranscriptGenerator
 from bot.utils.logger import TicketLogger
 from bot.views.modal_views import (
-    TransferTicketModal, ChangePriorityModal, RenameTicketModal,
+    TransferTicketModal, ChangePriorityModal, PrioritySelectView, RenameTicketModal,
     ChangeDepartmentModal, ChangeOwnerModal, AddMemberModal,
     RemoveMemberModal, InternalNoteModal, RatingModal, AddEvidenceModal
 )
@@ -107,7 +107,19 @@ class TicketActionBase(Select):
                     return await interaction.response.send_message("❌ لقد قمت بتقييم هذه التذكرة بالفعل!", ephemeral=True)
                 await interaction.response.send_modal(RatingModal(ticket, staff_id=ticket.get("claimed_by"), lang=self.lang))
             elif action == "transfer": await interaction.response.send_modal(TransferTicketModal(ticket, self.lang))
-            elif action == "priority": await interaction.response.send_modal(ChangePriorityModal(ticket, self.lang))
+            elif action == "priority":
+                p_embed = EmbedBuilder.create_embed(
+                    title="⚡ تحديد أولوية / وسم التذكرة",
+                    description=(
+                        f"اختر المستوى المناسب لأولوية التذكرة الحالية `#{ticket.get('id')}`:\n\n"
+                        f"🔴 **عاجلة (Urgent):** مشاكل حرجة تتطلب تدخلاً فورياً.\n"
+                        f"🟠 **عالية (High):** قضايا ذات أهمية مرتفعة وسريعة.\n"
+                        f"🟡 **متوسطة (Medium):** استفسارات ومشاكل عادية.\n"
+                        f"🟢 **منخفضة (Low):** اقتراحات وأسئلة عامة غير عاجلة."
+                    ),
+                    color=EmbedBuilder.COLOR_WARNING
+                )
+                return await interaction.response.send_message(embed=p_embed, view=PrioritySelectView(ticket, self.lang), ephemeral=True)
             elif action == "rename": await interaction.response.send_modal(RenameTicketModal(ticket, self.lang))
             elif action == "department": await interaction.response.send_modal(ChangeDepartmentModal(ticket, self.lang))
             elif action == "owner": await interaction.response.send_modal(ChangeOwnerModal(ticket, self.lang))
@@ -446,9 +458,45 @@ class TicketActionBase(Select):
         await interaction.followup.send("🔄 تم إعادة التحديث.", ephemeral=True)
 
     async def _execute_info(self, interaction, ticket):
-        embed = EmbedBuilder.create_embed(title=f"📊 حالة التذكرة #{ticket.get('id')}", color=EmbedBuilder.COLOR_INFO)
-        embed.add_field(name="👤 صاحب التذكرة", value=f"<@{ticket.get('user_id')}>", inline=True)
-        embed.add_field(name="🔒 الحالة", value=ticket.get("status"), inline=True)
+        ticket_id = ticket.get('id', 'N/A')
+        user_id = ticket.get('user_id')
+        claimed_by = ticket.get('claimed_by')
+        priority = ticket.get('priority', 'عادية')
+        department = ticket.get('department') or ticket.get('category_id', 'عام')
+        status = ticket.get('status', 'open')
+        created_at = ticket.get('created_at', 'غير متوفر')
+        form_answers = ticket.get('form_answers')
+
+        status_display = {
+            "open": "مفتوحة 🟢",
+            "claimed": "مستلمة 🟡",
+            "on_hold": "معلقة ⏸️",
+            "closed": "مغلقة 🔒"
+        }.get(status, status)
+
+        embed = EmbedBuilder.create_embed(
+            title=f"📋 تفاصيل ومعلومات التذكرة #{ticket_id}",
+            description=f"هذه هي البيانات والتفاصيل الكاملة للتذكرة والقسم:",
+            color=EmbedBuilder.COLOR_INFO
+        )
+        embed.add_field(name="👤 صاحب التذكرة", value=f"<@{user_id}>\n`({user_id})`", inline=True)
+        embed.add_field(name="🏷️ القسم", value=f"`{department}`", inline=True)
+        embed.add_field(name="⚡ الأولوية", value=f"`{priority}`", inline=True)
+        embed.add_field(name="🔒 الحالة الحالية", value=f"{status_display}", inline=True)
+        embed.add_field(name="👔 المستلم", value=f"<@{claimed_by}>" if claimed_by else "*لم تستلم بعد*", inline=True)
+        embed.add_field(name="📅 تاريخ الفتح", value=f"{created_at[:16]}", inline=True)
+
+        if form_answers and form_answers.strip():
+            embed.add_field(
+                name="📝 إجابات وبيانات النموذج التفاعلي (سبب الفتح والتفاصيل):",
+                value=form_answers[:1024],
+                inline=False
+            )
+
+        owner = interaction.guild.get_member(user_id) if (interaction.guild and user_id) else None
+        if owner and hasattr(owner, "display_avatar") and owner.display_avatar:
+            embed.set_thumbnail(url=owner.display_avatar.url)
+
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     async def _execute_audit_log(self, interaction, ticket):
@@ -536,12 +584,12 @@ class TicketActionBase(Select):
 class MemberActionsSelect(TicketActionBase):
     def __init__(self, ticket: dict, lang: str = "ar"):
         super().__init__(ticket=ticket, lang=lang, placeholder="👤 أوامر العضو", options=[
+            discord.SelectOption(label="معلومات وتفاصيل التذكرة", value="info", emoji="📋", description="عرض الأولوية، القسم، إجابات النموذج والتفاصيل"),
             discord.SelectOption(label="إغلاق التذكرة", value="close", emoji="🔒"),
             discord.SelectOption(label="إضافة دليل", value="add_evidence", emoji="📸"),
             discord.SelectOption(label="تقييم الإداري", value="rate_staff", emoji="⭐"),
             discord.SelectOption(label="نداء الدعم", value="summon_staff", emoji="🔔"),
             discord.SelectOption(label="إضافة عضو", value="add_member", emoji="➕"),
-            discord.SelectOption(label="حالة التذكرة", value="info", emoji="📊"),
             discord.SelectOption(label="🔄 ريستارت / إعادة تحديث القائمة", value="restart", emoji="🔄")
         ], custom_id="sel_member")
 
@@ -552,6 +600,7 @@ class StaffManagementSelect(TicketActionBase):
             discord.SelectOption(label="استلام التذكرة" if not claimed else "استلام (مستلمة)", value="claim", emoji="📌"),
             discord.SelectOption(label="إلغاء الاستلام", value="unclaim", emoji="🔓"),
             discord.SelectOption(label="تفاصيل صاحب التذكرة", value="owner_details", emoji="👤"),
+            discord.SelectOption(label="معلومات وتفاصيل التذكرة", value="info", emoji="📋"),
             discord.SelectOption(label="إعادة فتح التذكرة", value="reopen", emoji="🔓"),
             discord.SelectOption(label="نقل التذكرة", value="transfer", emoji="🔄"),
             discord.SelectOption(label="تغيير اسم التذكرة", value="rename", emoji="✏️"),
@@ -585,6 +634,17 @@ class TicketControlView(View):
         self.add_item(MemberActionsSelect(dummy, lang))
         self.add_item(StaffManagementSelect(dummy, lang))
         self.add_item(StaffSystemSelect(dummy, lang))
+
+    @discord.ui.button(label="📋 تفاصيل ومعلومات التذكرة", style=discord.ButtonStyle.primary, custom_id="btn_ticket_quick_info", row=3)
+    async def btn_ticket_info(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        ticket = db.get_ticket_by_channel(interaction.channel_id)
+        if not ticket:
+            return await interaction.followup.send("❌ تعذر العثور على بيانات هذه التذكرة.", ephemeral=True)
+        
+        # Instantiate a helper handler to execute info
+        handler = TicketActionBase(ticket, self.lang)
+        await handler._execute_info(interaction, ticket)
 
     @discord.ui.button(label="🔄 ريستارت القائمة", style=discord.ButtonStyle.secondary, custom_id="btn_restart_ticket_controls", row=3)
     async def btn_restart_controls(self, interaction: discord.Interaction, button: discord.ui.Button):

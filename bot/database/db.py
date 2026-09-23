@@ -228,7 +228,8 @@ class DatabaseManager:
                     last_staff_message_at {text_type},
                     member_responded {int_type} DEFAULT 1,
                     category_points {int_type} DEFAULT 0,
-                    evidence_enabled {int_type} DEFAULT 1
+                    evidence_enabled {int_type} DEFAULT 1,
+                    form_answers {text_type} DEFAULT ''
                 )""",
                 f"""CREATE TABLE IF NOT EXISTS ticket_evidence (
                     id {pk_type},
@@ -363,6 +364,14 @@ class DatabaseManager:
                     if not cursor.fetchone():
                         cursor.execute("ALTER TABLE tickets ADD COLUMN evidence_enabled INTEGER DEFAULT 1;")
 
+                    cursor.execute("""
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name='tickets' AND column_name='form_answers';
+                    """)
+                    if not cursor.fetchone():
+                        cursor.execute("ALTER TABLE tickets ADD COLUMN form_answers TEXT DEFAULT '';")
+
                     for col, col_type in [("ticket_type", "VARCHAR(255) DEFAULT 'general'"), ("complaint_accepted", "INTEGER DEFAULT 0"), ("punished_user_id", "BIGINT DEFAULT 0"), ("timeout_duration", "INTEGER DEFAULT 0")]:
                         cursor.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name='closure_info' AND column_name='{col}';")
                         if not cursor.fetchone():
@@ -377,6 +386,8 @@ class DatabaseManager:
                         cursor.execute("ALTER TABLE tickets ADD COLUMN category_points INTEGER DEFAULT 0;")
                     if "evidence_enabled" not in cols:
                         cursor.execute("ALTER TABLE tickets ADD COLUMN evidence_enabled INTEGER DEFAULT 1;")
+                    if "form_answers" not in cols:
+                        cursor.execute("ALTER TABLE tickets ADD COLUMN form_answers TEXT DEFAULT '';")
 
                     cursor.execute("PRAGMA table_info(closure_info)")
                     c_cols = [row[1] for row in cursor.fetchall()]
@@ -513,11 +524,11 @@ class DatabaseManager:
         self._run_query("DELETE FROM panels WHERE id = ?", (panel_id,))
 
     # --- Ticket Operations ---
-    def create_ticket(self, guild_id: int, channel_id: int, user_id: int, panel_id: int, category_id: str, points: int = 0) -> int:
+    def create_ticket(self, guild_id: int, channel_id: int, user_id: int, panel_id: int, category_id: str, points: int = 0, form_answers: str = "") -> int:
         ticket_id = self._run_query("""
-        INSERT INTO tickets (guild_id, channel_id, user_id, panel_id, category_id, status, created_at, category_points)
-        VALUES (?, ?, ?, ?, ?, 'open', ?, ?)
-        """, (guild_id, channel_id, user_id, panel_id, category_id, datetime.utcnow().isoformat(), points), fetch="lastrowid")
+        INSERT INTO tickets (guild_id, channel_id, user_id, panel_id, category_id, status, created_at, category_points, form_answers)
+        VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?)
+        """, (guild_id, channel_id, user_id, panel_id, category_id, datetime.utcnow().isoformat(), points, form_answers or ""), fetch="lastrowid")
         
         if not ticket_id:
             res = self.get_ticket_by_channel(channel_id)
@@ -526,8 +537,16 @@ class DatabaseManager:
             return 1
         return ticket_id
 
+    def update_form_answers(self, channel_id: int, form_answers: str):
+        self._run_query("UPDATE tickets SET form_answers = ? WHERE channel_id = ?", (form_answers, channel_id))
+
     def get_user_open_ticket(self, user_id: int, category_id: str) -> Optional[Dict[str, Any]]:
         return self._run_query("SELECT * FROM tickets WHERE user_id = ? AND category_id = ? AND status = 'open'", (user_id, category_id), fetch="one")
+
+    def get_user_any_open_ticket(self, user_id: int, guild_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        if guild_id:
+            return self._run_query("SELECT * FROM tickets WHERE user_id = ? AND guild_id = ? AND status = 'open' ORDER BY id DESC LIMIT 1", (user_id, guild_id), fetch="one")
+        return self._run_query("SELECT * FROM tickets WHERE user_id = ? AND status = 'open' ORDER BY id DESC LIMIT 1", (user_id,), fetch="one")
 
     def get_ticket_by_id(self, ticket_id: int) -> Optional[Dict[str, Any]]:
         res = self._run_query("SELECT * FROM tickets WHERE id = ?", (ticket_id,), fetch="one")
@@ -565,6 +584,10 @@ class DatabaseManager:
 
     def update_staff_reply(self, channel_id: int, timestamp: str):
         self._run_query("UPDATE tickets SET last_staff_message_at = ?, member_responded = 0 WHERE channel_id = ?", (timestamp, channel_id))
+
+    def mark_inactivity_warning(self, channel_id: int):
+        # Value 2 indicates warning has been issued, waiting for auto-close threshold
+        self._run_query("UPDATE tickets SET member_responded = 2 WHERE channel_id = ?", (channel_id,))
 
     def set_member_responded(self, channel_id: int):
         self._run_query("UPDATE tickets SET member_responded = 1, last_staff_message_at = NULL WHERE channel_id = ?", (channel_id,))
@@ -856,12 +879,47 @@ class DatabaseManager:
         FROM ratings GROUP BY staff_id ORDER BY avg_stars DESC LIMIT 5
         """, fetch="all") or []
 
+        # Calculate average first response time (in minutes) for tickets with first_response_at
+        first_resp_rows = self._run_query("SELECT created_at, first_response_at FROM tickets WHERE first_response_at IS NOT NULL", fetch="all") or []
+        resp_times = []
+        for r in first_resp_rows:
+            try:
+                c_time = datetime.fromisoformat(r["created_at"])
+                f_time = datetime.fromisoformat(r["first_response_at"])
+                diff_m = (f_time - c_time).total_seconds() / 60.0
+                if diff_m >= 0:
+                    resp_times.append(diff_m)
+            except Exception:
+                pass
+        avg_resp_min = round(sum(resp_times) / len(resp_times), 1) if resp_times else 0.0
+
+        # Calculate average ticket lifetime/resolution time (in hours)
+        closed_rows = self._run_query("SELECT created_at, closed_at FROM tickets WHERE status = 'closed' AND closed_at IS NOT NULL", fetch="all") or []
+        res_times = []
+        for r in closed_rows:
+            try:
+                c_time = datetime.fromisoformat(r["created_at"])
+                cl_time = datetime.fromisoformat(r["closed_at"])
+                diff_h = (cl_time - c_time).total_seconds() / 3600.0
+                if diff_h >= 0:
+                    res_times.append(diff_h)
+            except Exception:
+                pass
+        avg_res_hours = round(sum(res_times) / len(res_times), 1) if res_times else 0.0
+
+        # Priority breakdown
+        priority_rows = self._run_query("SELECT priority, COUNT(*) as cnt FROM tickets GROUP BY priority", fetch="all") or []
+        priority_breakdown = {p.get("priority", "عادية") or "عادية": p.get("cnt", 0) for p in priority_rows}
+
         return {
             "total_tickets": total,
             "open_tickets": open_cnt,
             "closed_tickets": closed_cnt,
             "average_rating": avg_rating,
-            "top_staff": top_staff
+            "top_staff": top_staff,
+            "avg_response_minutes": avg_resp_min,
+            "avg_resolution_hours": avg_res_hours,
+            "priority_breakdown": priority_breakdown
         }
 
     # --- Wizard Sessions (Setup Resume) ---

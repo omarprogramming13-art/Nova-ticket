@@ -102,23 +102,24 @@ class TicketQuestionsModal(Modal):
                 reason=f"Support ticket opened by {interaction.user.name}"
             )
 
-            # 3. Save ticket in database
+            # 3. Prepare Answers Text
+            answers_text = ""
+            for inp in self.text_inputs:
+                ans_val = inp.value.strip() if inp.value else "*(لم يتم التحديد)*"
+                answers_text += f"• **{inp.label}:** {ans_val}\n"
+
+            # 4. Save ticket in database (with answers saved)
             ticket_id = db.create_ticket(
                 guild_id=guild.id,
                 channel_id=ticket_channel.id,
                 user_id=user_id,
                 panel_id=self.panel_id,
                 category_id=self.category_id,
-                points=self.category_info.get("points", 0)
+                points=self.category_info.get("points", 0),
+                form_answers=answers_text.strip()
             )
 
-            # 4. Prepare Answers Embed Section
-            answers_text = ""
-            for inp in self.text_inputs:
-                ans_val = inp.value.strip() if inp.value else "*(لم يتم التحديد)*"
-                answers_text += f"• **{inp.label}:**\n```{ans_val}```\n"
-
-            # 5. Welcome Embed & Controls
+            # 5. Welcome Embed & Controls (Simple, clean, uncluttered)
             from bot.views.ticket_controls import TicketControlView
             welcome_embed = EmbedBuilder.ticket_welcome_embed(interaction.user, self.category_name, lang=self.lang, guild=guild)
 
@@ -127,31 +128,12 @@ class TicketQuestionsModal(Modal):
                 fmt_welcome = custom_welcome.replace("{user}", interaction.user.mention).replace("{category}", self.category_name).replace("{server}", guild.name)
                 welcome_embed.description = fmt_welcome
 
-            if answers_text:
-                welcome_embed.add_field(
-                    name="📝 بيانات وإجابات النموذج التفاعلي (Submitted Details):",
-                    value=answers_text[:1024],
-                    inline=False
-                )
-
             control_view = TicketControlView(lang=self.lang)
             ping_content = " | ".join(self.pings)
 
             await ticket_channel.send(content=ping_content, embed=welcome_embed, view=control_view)
 
-            # 6. Evidence Prompt
-            evidence_prompt = EmbedBuilder.create_embed(
-                title="📸 إرفاق الأدلة والصور",
-                description=(
-                    f"مرحباً {interaction.user.mention}، يرجى إرسال أي صور أو سكرين شوت (Screenshot) "
-                    "متعلقة بطلبك مباشرة هنا في القناة ليتم حفظها في ملف التذكرة تلقائياً.\n\n"
-                    "💡 يمكنك أيضاً الضغط على **إضافة دليل** من القائمة المنسدلة في أي وقت."
-                ),
-                color=EmbedBuilder.COLOR_INFO
-            )
-            await ticket_channel.send(embed=evidence_prompt)
-
-            # 7. Send DM confirmation
+            # 6. Send DM confirmation
             try:
                 dm_embed = discord.Embed(
                     title="🎫 تم فتح تذكرتك بنجاح!",
@@ -255,14 +237,21 @@ class TicketCategorySelect(Select):
                 await interaction.response.defer(ephemeral=True)
                 return await interaction.followup.send(f"⏳ يرجى الانتظار {remaining:.1f} ثوانٍ قبل فتح تذكرة أخرى.", ephemeral=True)
 
-            # 3. Check existing open ticket limit
-            existing = db.get_user_open_ticket(user_id, category_id)
+            # 3. Check existing open ticket limit (prevent multi-ticket spam)
+            existing = db.get_user_any_open_ticket(user_id, interaction.guild_id if interaction.guild else None)
+            if not existing:
+                existing = db.get_user_open_ticket(user_id, category_id)
+
             if existing and interaction.guild:
                 existing_ch = interaction.guild.get_channel(existing["channel_id"])
                 if existing_ch:
                     await interaction.response.defer(ephemeral=True)
-                    msg = get_text("ticket_limit_reached", lang=self.lang)
-                    return await interaction.followup.send(f"{msg}\n📌 **تذكرتك المفتوحة حالياً:** {existing_ch.mention}", ephemeral=True)
+                    return await interaction.followup.send(
+                        f"⚠️ **عفواً، لا يمكنك فتح أكثر من تذكرة نشطة في نفس الوقت!**\n"
+                        f"📌 **تذكرتك الحالية المفتوحة:** {existing_ch.mention}\n"
+                        f"يرجى متابعة طلبك أو إغلاق التذكرة السابقة قبل فتح تذكرة جديدة.",
+                        ephemeral=True
+                    )
                 else:
                     db.update_ticket_status(existing["channel_id"], "deleted")
 

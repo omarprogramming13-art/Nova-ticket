@@ -74,36 +74,16 @@ class EmbedBuilder:
     @staticmethod
     def ticket_welcome_embed(user: discord.Member, category_name: str, lang: str = "ar", guild: Optional[discord.Guild] = None) -> discord.Embed:
         server_name = guild.name if guild else "Discord Server"
-        server_icon = guild.icon.url if (guild and guild.icon) else None
 
         embed = discord.Embed(
-            title=f"🎫 مرحباً بك في تذكرة الدعم الفني - {category_name}",
+            title=f"🎫 مرحباً بك في تذكرة الدعم الفني",
             description=(
                 f"أهلاً بك {user.mention} 👋 في مركز الدعم الفني الخاص بـ **{server_name}**.\n\n"
-                f"يرجى توضيح تفاصيل طلبك أو مشكلتك بالتفصيل وسيقوم أحد أعضاء طاقم الدعم المساعد بتقديم الخدمة لك بأسرع وقت."
+                f"يرجى توضيح استفسارك أو مشكلتك هنا وسيقوم أحد أعضاء فريق الدعم بالرد عليك ومساعدتك بأسرع وقت.\n\n"
+                f"💡 *يمكنك استعراض تفاصيل التذكرة، القسم، والأولوية عبر خيار **معلومات وتفاصيل التذكرة** من القائمة أسفله.*"
             ),
             color=EmbedBuilder.COLOR_PRIMARY
         )
-        
-        if server_icon:
-            embed.set_author(name=f"🏰 {server_name}", icon_url=server_icon)
-        else:
-            embed.set_author(name=f"👤 صاحب التذكرة: {user.display_name}")
-
-        embed.set_thumbnail(url=user.display_avatar.url)
-        
-        embed.add_field(name="👤 صاحب التذكرة / Owner", value=f"{user.mention}\n`({user.id})`", inline=True)
-        embed.add_field(name="🏷️ قسم التذكرة / Category", value=f"`{category_name}`", inline=True)
-        embed.add_field(name="📌 الأولوية / Priority", value="`عادية 🟢`", inline=True)
-        embed.add_field(
-            name="📷 إرسال المرفقات والأدلة",
-            value="يمكنك إرفاق أية صور أو فيديوهات أو ملفات مباشرة هنا في القناة ليتم حفظها كدليل في التذكرة.",
-            inline=False
-        )
-
-        footer_text = f"🏰 {server_name} • نظام التذاكر المتقدم"
-        embed.set_footer(text=footer_text, icon_url=server_icon or user.display_avatar.url)
-        embed.timestamp = discord.utils.utcnow()
         return embed
 
     @staticmethod

@@ -45,6 +45,62 @@ class PointsCog(commands.Cog):
                 break
         embed.add_field(name="🏆 الترتيب", value=f"**{rank}** على مستوى الإدارة", inline=True)
 
+        # Staff Achievements & Badges
+        badges = []
+        if tickets >= 50:
+            badges.append("🎖️ **محترف التذاكر** (50+ تذكرة)")
+        elif tickets >= 20:
+            badges.append("🥉 **منجز الدعم** (20+ تذكرة)")
+        elif tickets >= 5:
+            badges.append("🔰 **مبادر الدعم** (5+ تذاكر)")
+
+        if points >= 100:
+            badges.append("💎 **الماسي** (100+ نقطة)")
+        elif points >= 50:
+            badges.append("🥇 **الذهبي** (50+ نقطة)")
+        elif points >= 20:
+            badges.append("🥈 **الفضي** (20+ نقطة)")
+
+        if avg_rating >= 4.8 and total_ratings >= 5:
+            badges.append("⭐ **نجم الخدمة الممتازة** (تقييم 4.8+)")
+        elif avg_rating >= 4.0 and total_ratings >= 3:
+            badges.append("✨ **موظف معتمد** (تقييم 4.0+)")
+
+        if not badges:
+            badges.append("⏳ في بداية المشوار لإحراز الأوسمة!")
+
+        embed.add_field(name="🎖️ الأوسمة والإنجازات (Badges):", value="\n".join(badges), inline=False)
+
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="staff_leaderboard", description="لوحة صدارة وتصنيف موظفي الدعم الفني / Staff Performance Leaderboard")
+    async def staff_leaderboard(self, interaction: discord.Interaction):
+        all_stats = db.get_all_staff_stats(interaction.guild_id)
+        if not all_stats:
+            return await interaction.response.send_message("❌ لا توجد إحصائيات مسجلة للموظفين بعد.", ephemeral=True)
+
+        embed = EmbedBuilder.create_embed(
+            title="🏆 لوحة صدارة طاقم الدعم الفني",
+            description="ترتيب أفضل الموظفين حسب النقاط والتذاكر المنجزة:",
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+
+        medals = ["🥇", "🥈", "🥉"]
+        lines = []
+        for idx, s in enumerate(all_stats[:10]):
+            medal = medals[idx] if idx < 3 else f"`#{idx+1}`"
+            u_id = s.get("user_id")
+            pts = s.get("points", 0)
+            t_cnt = s.get("tickets_handled", 0)
+            t_stars = s.get("total_stars", 0)
+            t_ratings = s.get("total_ratings", 0)
+            avg = round(t_stars / t_ratings, 1) if t_ratings > 0 else 0.0
+
+            lines.append(
+                f"{medal} <@{u_id}> — **{pts}** نقطة | **{t_cnt}** تذكرة | ⭐ **{avg}** ({t_ratings})"
+            )
+
+        embed.add_field(name="📊 أفضل الموظفين:", value="\n".join(lines), inline=False)
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="points_add", description="إضافة نقاط لعضو في طاقم الإدارة / Add points to a staff member")

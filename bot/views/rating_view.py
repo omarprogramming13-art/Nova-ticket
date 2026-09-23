@@ -54,6 +54,33 @@ class FeedbackModal(Modal):
                 db.update_staff_points(guild_id, self.staff_id, awarded_points)
                 db.add_staff_rating_stat(guild_id, self.staff_id, self.stars)
 
+            # Log review in log_channel if configured, especially with alert if low rating
+            if guild_id:
+                guild_obj = interaction.guild or (interaction.client.get_guild(guild_id) if hasattr(interaction, "client") else None)
+                if guild_obj:
+                    settings = db.get_guild_settings(guild_id) or {}
+                    log_ch_id = settings.get("log_channel_id")
+                    if log_ch_id:
+                        log_ch = guild_obj.get_channel(int(log_ch_id))
+                        if log_ch:
+                            star_symbols = "⭐" * self.stars
+                            review_color = EmbedBuilder.COLOR_DANGER if self.stars <= 2 else (EmbedBuilder.COLOR_WARNING if self.stars == 3 else EmbedBuilder.COLOR_SUCCESS)
+                            alert_prefix = "⚠️ [تنبيه تقييم منخفض] " if self.stars <= 2 else "⭐ [تقييم جديد] "
+                            review_embed = EmbedBuilder.create_embed(
+                                title=f"{alert_prefix}تقييم خدمة الدعم الفني",
+                                description=f"تم استلام تقييم جديد للتذكرة رقم `#{self.ticket_id}`",
+                                color=review_color
+                            )
+                            review_embed.add_field(name="👤 العميل", value=f"{interaction.user.mention} (`{interaction.user.id}`)", inline=True)
+                            review_embed.add_field(name="👔 الموظف المسؤول", value=f"<@{self.staff_id}> (`{self.staff_id}`)", inline=True)
+                            review_embed.add_field(name="⭐ النجوم", value=f"**{self.stars}/5** ({star_symbols})", inline=True)
+                            review_embed.add_field(name="💬 ملاحظة / تعليق العميل", value=f"```{feedback_text}```", inline=False)
+                            review_embed.add_field(name="💰 النقاط المستحقة", value=f"`{'+' if awarded_points >= 0 else ''}{awarded_points}` نقطة", inline=True)
+                            try:
+                                await log_ch.send(embed=review_embed)
+                            except Exception as ch_err:
+                                print(f"Could not send review embed to log channel: {ch_err}")
+
             # Try deleting the original rating request message (with the 5 star buttons)
             if interaction.message:
                 try:
