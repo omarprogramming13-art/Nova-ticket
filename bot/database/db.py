@@ -1194,12 +1194,42 @@ class DatabaseManager:
 
     # --- Staff Leaderboard & Ranking ---
     def get_staff_leaderboard(self, guild_id: int, limit: int = 10) -> list:
+        # Auto-sync ratings data for this guild into staff_stats
+        try:
+            ratings_agg = self._run_query("""
+                SELECT r.staff_id as user_id, 
+                       COUNT(r.id) as rat_count, 
+                       SUM(r.stars) as rat_stars,
+                       SUM(CASE WHEN r.stars = 5 THEN 15 WHEN r.stars = 4 THEN 10 WHEN r.stars = 3 THEN 5 WHEN r.stars = 2 THEN 1 ELSE 0 END) as calc_points
+                FROM ratings r
+                JOIN tickets t ON (r.ticket_id = t.id OR r.ticket_id = t.channel_id)
+                WHERE t.guild_id = ?
+                GROUP BY r.staff_id
+            """, (guild_id,), fetch="all") or []
+
+            for agg in ratings_agg:
+                u_id = agg.get("user_id")
+                if u_id:
+                    self._run_query("INSERT OR IGNORE INTO staff_stats (guild_id, user_id) VALUES (?, ?)", (guild_id, u_id))
+                    r_stars = agg.get("rat_stars") or 0
+                    r_count = agg.get("rat_count") or 0
+                    c_points = agg.get("calc_points") or 0
+                    self._run_query("""
+                        UPDATE staff_stats 
+                        SET total_stars = CASE WHEN total_stars < ? THEN ? ELSE total_stars END,
+                            total_ratings = CASE WHEN total_ratings < ? THEN ? ELSE total_ratings END,
+                            points = CASE WHEN points < ? THEN ? ELSE points END
+                        WHERE guild_id = ? AND user_id = ?
+                    """, (r_stars, r_stars, r_count, r_count, c_points, c_points, guild_id, u_id))
+        except Exception as e:
+            sys.stderr.write(f"[LEADERBOARD_SYNC_WARN] {e}\n")
+
         rows = self._run_query("""
             SELECT user_id, points, tickets_handled, total_stars, total_ratings,
                    CASE WHEN total_ratings > 0 THEN ROUND(CAST(total_stars AS FLOAT) / total_ratings, 2) ELSE 0.0 END as avg_stars
             FROM staff_stats
-            WHERE guild_id = ?
-            ORDER BY points DESC, tickets_handled DESC, avg_stars DESC
+            WHERE guild_id = ? AND (points > 0 OR tickets_handled > 0 OR total_ratings > 0)
+            ORDER BY points DESC, tickets_handled DESC, total_stars DESC
             LIMIT ?
         """, (guild_id, limit), fetch="all")
         return rows or []

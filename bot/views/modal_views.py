@@ -195,6 +195,106 @@ class RenameTicketModal(Modal):
             details=f"من {old_name} إلى {new_name}"
         )
 
+class ChangeDepartmentSelectView(View):
+    def __init__(self, ticket: dict, lang: str = "ar"):
+        super().__init__(timeout=120)
+        self.ticket = ticket
+        self.lang = lang
+
+        panel_id = ticket.get("panel_id")
+        panel = db.get_panel_by_id(panel_id) if panel_id else None
+        categories = []
+        if panel and panel.get("categories"):
+            categories = panel.get("categories")
+        else:
+            all_panels = db.get_panels() or []
+            for p in all_panels:
+                for c in p.get("categories", []):
+                    if c not in categories and not any(existing.get("name") == c.get("name") for existing in categories):
+                        categories.append(c)
+
+        options = []
+        for cat in categories[:25]:
+            c_name = cat.get("name") or cat.get("id", "قسم")
+            c_emoji = cat.get("emoji") or "🏢"
+            c_desc = (cat.get("description") or f"نقل التذكرة إلى قسم {c_name}")[:95]
+            options.append(discord.SelectOption(
+                label=c_name[:50],
+                value=cat.get("id", c_name)[:90],
+                description=c_desc,
+                emoji=c_emoji
+            ))
+
+        if not options:
+            options.append(discord.SelectOption(label="الدعم الفني والتقني", value="general", emoji="🛠️", description="القسم الأساسي"))
+
+        select = Select(
+            placeholder="🏢 اختر القسم الجديد من اللوحة المعتمدة...",
+            options=options,
+            min_values=1,
+            max_values=1
+        )
+        select.callback = self.on_select
+        self.add_item(select)
+
+    async def on_select(self, interaction: discord.Interaction):
+        cat_id = interaction.data["values"][0]
+        
+        panel_id = self.ticket.get("panel_id")
+        panel = db.get_panel_by_id(panel_id) if panel_id else None
+        categories = panel.get("categories", []) if panel else []
+        if not categories:
+            all_panels = db.get_panels() or []
+            for p in all_panels:
+                categories.extend(p.get("categories", []))
+
+        chosen_cat = next((c for c in categories if c.get("id") == cat_id or c.get("name") == cat_id), None)
+        new_dept_name = chosen_cat.get("name", cat_id) if chosen_cat else cat_id
+
+        db.update_department(interaction.channel_id, new_dept_name)
+
+        if chosen_cat and interaction.guild and isinstance(interaction.channel, discord.TextChannel):
+            disc_cat_id = chosen_cat.get("category_channel_id")
+            if disc_cat_id:
+                try:
+                    disc_cat = interaction.guild.get_channel(int(disc_cat_id))
+                    if disc_cat and isinstance(disc_cat, discord.CategoryChannel):
+                        await interaction.channel.edit(category=disc_cat)
+                except Exception as cat_err:
+                    print(f"Could not move channel category: {cat_err}")
+
+            roles_to_assign = chosen_cat.get("roles_to_assign", [])
+            if roles_to_assign:
+                for r_id in roles_to_assign:
+                    try:
+                        role_obj = interaction.guild.get_role(int(r_id))
+                        if role_obj:
+                            await interaction.channel.set_permissions(
+                                role_obj,
+                                view_channel=True,
+                                send_messages=True,
+                                read_message_history=True,
+                                attach_files=True,
+                                embed_links=True
+                            )
+                    except Exception:
+                        pass
+
+        embed = EmbedBuilder.create_embed(
+            title="🏢 تم تحويل ونقل التذكرة",
+            description=f"تم تحويل هذه التذكرة بنجاح إلى قسم: **`{new_dept_name}`** بواسطة {interaction.user.mention}.",
+            color=EmbedBuilder.COLOR_INFO
+        )
+        await interaction.response.send_message(embed=embed)
+
+        await TicketLogger.log_action(
+            guild=interaction.guild,
+            ticket=self.ticket,
+            action_name="تغيير القسم",
+            executor=interaction.user,
+            details=f"القسم الجديد: {new_dept_name}"
+        )
+
 class ChangeDepartmentModal(Modal):
     def __init__(self, ticket: dict, lang: str = "ar"):
         super().__init__(title="🏢 نقل التذكرة إلى قسم آخر")

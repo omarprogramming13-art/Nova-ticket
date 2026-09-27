@@ -147,5 +147,42 @@ class StatsCog(commands.Cog):
 
         await interaction.response.send_message(embed=embed)
 
+    @app_commands.command(name="top", description="عرض صدارة وتوب طاقم الدعم الفني والنقاط (Top Staff Leaderboard)")
+    async def top_slash(self, interaction: discord.Interaction):
+        await self.leaderboard(interaction)
+
+    @commands.command(name="top", aliases=["leaderboard", "توب", "المتصدرين", "شرف"])
+    async def top_prefix(self, ctx: commands.Context):
+        if not ctx.guild:
+            return await ctx.send("❌ يرجى استخدام هذا الأمر داخل السيرفر.")
+
+        leaders = db.get_staff_leaderboard(ctx.guild.id, limit=10)
+        if not leaders:
+            return await ctx.send("📊 لا توجد إحصائيات أو نقاط مسجلة لطاقم الدعم في هذا السيرفر بعد.")
+
+        embed = discord.Embed(
+            title="🏆 لوحة شرف وصدارة طاقم الدعم الفني (Staff Leaderboard)",
+            description=f"أفضل موظفي الدعم الفني في سيرفر **{ctx.guild.name}** حسب سرعة الإنجاز، النقاط، وتقييم النجوم:\n",
+            color=0xFEE75C
+        )
+
+        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+        lines = []
+        for idx, row in enumerate(leaders):
+            badge = medals[idx] if idx < len(medals) else f"`#{idx+1}`"
+            u_mention = f"<@{row['user_id']}>"
+            pts = row.get("points", 0)
+            tkts = row.get("tickets_handled", 0)
+            stars = row.get("avg_stars", 0.0)
+            star_str = f"{stars} ⭐" if stars > 0 else "بدون تقييم"
+            lines.append(f"{badge} {u_mention} — **{pts}** نقطة | `{tkts}` تذكرة منجزة | {star_str}")
+
+        embed.add_field(name="قائمة المتصدرين:", value="\n\n".join(lines), inline=False)
+        embed.set_footer(text="نظام تذاكر ديسكورد المتقدم • تحديث فوري للنقاط والتقييم")
+        if ctx.guild.icon:
+            embed.set_thumbnail(url=ctx.guild.icon.url)
+
+        await ctx.send(embed=embed)
+
 async def setup(bot: commands.Bot):
     await bot.add_cog(StatsCog(bot))

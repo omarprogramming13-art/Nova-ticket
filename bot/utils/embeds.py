@@ -100,16 +100,40 @@ class EmbedBuilder:
         chosen_color = color if color is not None else EmbedBuilder.COLOR_PRIMARY
 
         embed = discord.Embed(
-            title=f"🎫 مرحباً بك في تذكرة الدعم الفني",
+            title=f"🎫 تذكرة دعم فني جديدة • {category_name}",
             description=(
-                f"أهلاً بك {user.mention} 👋 في مركز الدعم الفني الخاص بـ **{server_name}**.\n\n"
-                f"• **القسم:** `{category_name}`\n"
-                f"• **أهمية القسم / الأولوية:** `{badge}`\n\n"
-                f"يرجى توضيح استفسارك أو مشكلتك هنا وسيقوم أحد أعضاء فريق الدعم بالرد عليك ومساعدتك بأسرع وقت.\n\n"
-                f"💡 *يمكنك استعراض تفاصيل التذكرة، القسم، والأولوية عبر خيار **معلومات وتفاصيل التذكرة** من القائمة أسفله.*"
+                f"مرحباً بك {user.mention} في نظام الدعم الفني لسيرفر **{server_name}** 👋\n\n"
+                f"يرجى كتابة تفاصيل استفسارك أو مشكلتك بوضوح، وسيقوم فريق الدعم المختص بمتابعة طلبك والرد عليك بأسرع وقت ممكن.\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             ),
             color=chosen_color
         )
+
+        embed.add_field(
+            name="📌 معلومات التذكرة",
+            value=(
+                f"• **صاحب التذكرة:** {user.mention} (`{user.id}`)\n"
+                f"• **القسم المعني:** `{category_name}`\n"
+                f"• **درجة الأولوية:** `{badge}`"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="⚙️ لوحة التحكم والإجراءات",
+            value=(
+                f"• استخدم **القوائم المنسدلة أسفل هذه الرسالة** لتنفيذ جميع العمليات والأوامر (إغلاق، استلام، نقل، أدلة، معلومات).\n"
+                f"• زر **الردود التلقائية / السريعة** متاح لطاقم الدعم لإرسال نماذج الرد الجاهزة بضغطة واحدة."
+            ),
+            inline=False
+        )
+
+        if guild and guild.icon:
+            embed.set_thumbnail(url=guild.icon.url)
+            embed.set_footer(text=f"{server_name} • نظام التذاكر المتقدم", icon_url=guild.icon.url)
+        else:
+            embed.set_footer(text="نظام التذاكر المتقدم • Discord Ticket System")
+        embed.timestamp = discord.utils.utcnow()
         return embed
 
     @staticmethod

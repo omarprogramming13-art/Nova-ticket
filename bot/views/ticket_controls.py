@@ -123,7 +123,10 @@ class TicketActionBase(Select):
                 )
                 return await interaction.response.send_message(embed=p_embed, view=PrioritySelectView(ticket, self.lang), ephemeral=True)
             elif action == "rename": await interaction.response.send_modal(RenameTicketModal(ticket, self.lang))
-            elif action == "department": await interaction.response.send_modal(ChangeDepartmentModal(ticket, self.lang))
+            elif action == "department":
+                from bot.views.modal_views import ChangeDepartmentSelectView
+                v = ChangeDepartmentSelectView(ticket, self.lang)
+                return await interaction.response.send_message("🏢 **اختر القسم الجديد من أقسام اللوحة المعتمدة:**", view=v, ephemeral=True)
             elif action == "owner": await interaction.response.send_modal(ChangeOwnerModal(ticket, self.lang))
             elif action == "add_member": await interaction.response.send_modal(AddMemberModal(ticket, self.lang))
             elif action == "remove_member": await interaction.response.send_modal(RemoveMemberModal(ticket, self.lang))
@@ -324,7 +327,7 @@ class TicketActionBase(Select):
                     ),
                     color=EmbedBuilder.COLOR_PRIMARY
                 )
-                await owner.send(embed=rating_embed, view=RatingView(ticket['id'], staff_id, self.lang))
+                await owner.send(embed=rating_embed, view=RatingView(ticket['id'], staff_id, guild.id, self.lang))
                 db.mark_rating_prompt_sent(ticket.get("id", 0))
             except Exception as e:
                 print(f"Error sending rating DM: {e}")
@@ -371,7 +374,7 @@ class TicketActionBase(Select):
                     ),
                     color=EmbedBuilder.COLOR_PRIMARY
                 )
-                await owner.send(embed=rating_embed, view=RatingView(ticket['id'], staff_id, self.lang))
+                await owner.send(embed=rating_embed, view=RatingView(ticket['id'], staff_id, guild.id, self.lang))
                 db.mark_rating_prompt_sent(ticket.get("id", 0))
             except Exception as e:
                 print(f"Error sending rating DM on delete: {e}")
@@ -595,50 +598,48 @@ class TicketActionBase(Select):
 # Select Components
 class MemberActionsSelect(TicketActionBase):
     def __init__(self, ticket: dict, lang: str = "ar"):
-        super().__init__(ticket=ticket, lang=lang, placeholder="👤 أوامر العضو", options=[
-            discord.SelectOption(label="معلومات وتفاصيل التذكرة", value="info", emoji="📋", description="عرض الأولوية، القسم، إجابات النموذج والتفاصيل"),
-            discord.SelectOption(label="🔐 تخويل إداري للاستبيان", value="authorize_staff", emoji="🔐", description="تخويل إداري لإجراء استبيان الإغلاق نيابة عنك"),
-            discord.SelectOption(label="إغلاق التذكرة", value="close", emoji="🔒"),
-            discord.SelectOption(label="إضافة دليل", value="add_evidence", emoji="📸"),
-            discord.SelectOption(label="تقييم الإداري", value="rate_staff", emoji="⭐"),
-            discord.SelectOption(label="نداء الدعم", value="summon_staff", emoji="🔔"),
-            discord.SelectOption(label="إضافة عضو", value="add_member", emoji="➕"),
-            discord.SelectOption(label="🔄 ريستارت / إعادة تحديث القائمة", value="restart", emoji="🔄")
-        ], custom_id="sel_member")
+        super().__init__(ticket=ticket, lang=lang, placeholder="👤 خيارات وأوامر صاحب التذكرة (Member Actions)...", options=[
+            discord.SelectOption(label="معلومات وتفاصيل التذكرة", value="info", emoji="📋", description="عرض بيانات التذكرة، القسم، والأولوية والنموذج"),
+            discord.SelectOption(label="إغلاق التذكرة", value="close", emoji="🔒", description="بدء إجراءات إغلاق التذكرة"),
+            discord.SelectOption(label="إضافة عضو للتذكرة", value="add_member", emoji="➕", description="دعوة عضو آخر للمحادثة بالتذكرة"),
+            discord.SelectOption(label="إزالة عضو من التذكرة", value="remove_member", emoji="➖", description="طرد عضو تمت إضافته سابقاً"),
+            discord.SelectOption(label="إضافة دليل / إثبات", value="add_evidence", emoji="📸", description="إرفاق رابط أو صورة كدليل رسمي"),
+            discord.SelectOption(label="نداء طاقم الدعم الفني", value="summon_staff", emoji="🔔", description="إرسال إشعار تنبيهي لطاقم الدعم"),
+            discord.SelectOption(label="تخويل إداري للاستبيان", value="authorize_staff", emoji="🔐", description="تخويل الإداري بإجراء استبيان الإغلاق نيابة عنك"),
+            discord.SelectOption(label="تقييم الإداري المستلم", value="rate_staff", emoji="⭐", description="تقييم خدمة الدعم الفني المباشرة"),
+            discord.SelectOption(label="تحديث وتنشيط القائمة", value="restart", emoji="🔄", description="إعادة مزامنة صلاحيات وعناصر التذكرة")
+        ], custom_id="sel_member", row=0)
 
 class StaffManagementSelect(TicketActionBase):
     def __init__(self, ticket: dict, lang: str = "ar"):
         claimed = ticket.get("claimed_by")
-        super().__init__(ticket=ticket, lang=lang, placeholder="👔 إدارة الطاقم", options=[
-            discord.SelectOption(label="استلام التذكرة" if not claimed else "استلام (مستلمة)", value="claim", emoji="📌"),
-            discord.SelectOption(label="إلغاء الاستلام", value="unclaim", emoji="🔓"),
-            discord.SelectOption(label="تفاصيل صاحب التذكرة", value="owner_details", emoji="👤"),
-            discord.SelectOption(label="معلومات وتفاصيل التذكرة", value="info", emoji="📋"),
-            discord.SelectOption(label="إعادة فتح التذكرة", value="reopen", emoji="🔓"),
-            discord.SelectOption(label="نقل التذكرة", value="transfer", emoji="🔄"),
-            discord.SelectOption(label="تغيير اسم التذكرة", value="rename", emoji="✏️"),
-            discord.SelectOption(label="نداء صاحب التذكرة", value="summon_member", emoji="🔔"),
-            discord.SelectOption(label="عرض الأدلة", value="view_evidence", emoji="📸"),
-            discord.SelectOption(label="إخفاء/إظهار", value="toggle_hide", emoji="👁️"),
-            discord.SelectOption(label="تغيير القسم", value="department", emoji="🏢"),
-            discord.SelectOption(label="تغيير الأولوية", value="priority", emoji="⚡"),
-            discord.SelectOption(label="ردود سريعة جاهزة", value="canned_responses", emoji="💬"),
-            discord.SelectOption(label="🔄 ريستارت / إعادة تحديث القائمة", value="restart", emoji="🔄")
-        ], custom_id="sel_staff_mgmt")
+        super().__init__(ticket=ticket, lang=lang, placeholder="👔 أدوات وإدارة طاقم الدعم (Staff Management)...", options=[
+            discord.SelectOption(label="استلام التذكرة" if not claimed else "فك / إلغاء الاستلام", value="claim" if not claimed else "unclaim", emoji="📌" if not claimed else "🔓", description="تعيين نفسك كمستلم للتذكرة أو فك الاستلام"),
+            discord.SelectOption(label="سجل ومخالفات صاحب التذكرة", value="owner_details", emoji="👤", description="عرض إحصائيات العضو وسوابق المخالفات والتحذيرات"),
+            discord.SelectOption(label="تحويل التذكرة إلى قسم آخر", value="department", emoji="🏢", description="نقل التذكرة إلى أحد أقسام اللوحة المعتمدة"),
+            discord.SelectOption(label="تعديل أولوية التذكرة", value="priority", emoji="⚡", description="تحديد مستوى الأهمية (طارئة / عالية / متوسطة / منخفضة)"),
+            discord.SelectOption(label="تغيير اسم روم التذكرة", value="rename", emoji="✏️", description="تعديل اسم القناة بالتنسيق المناسب"),
+            discord.SelectOption(label="نداء وتنبيه صاحب التذكرة", value="summon_member", emoji="🔔", description="إرسال منشن وتنبيه مباشر لصاحب التذكرة"),
+            discord.SelectOption(label="تحويل التذكرة لموظف آخر", value="transfer", emoji="🔄", description="نقل مسؤولية التذكرة لعضو طاقم آخر"),
+            discord.SelectOption(label="عرض وفحص الأدلة المرفقة", value="view_evidence", emoji="📸", description="استعراض قائمة الإثباتات والروابط المسجلة"),
+            discord.SelectOption(label="إخفاء / إظهار التذكرة", value="toggle_hide", emoji="👁️", description="إخفاء التذكرة مؤقتاً عن باقي الطاقم أو إظهارها"),
+            discord.SelectOption(label="تحديث وتنشيط القائمة", value="restart", emoji="🔄", description="إعادة مزامنة صلاحيات وعناصر التذكرة")
+        ], custom_id="sel_staff_mgmt", row=1)
 
 class StaffSystemSelect(TicketActionBase):
     def __init__(self, ticket: dict, lang: str = "ar"):
-        super().__init__(ticket=ticket, lang=lang, placeholder="⚙️ النظام والأرشيف", options=[
-            discord.SelectOption(label="إعادة فتح التذكرة", value="reopen", emoji="🔓"),
-            discord.SelectOption(label="قفل/فتح (لالعضو)", value="lock", emoji="🔐"),
-            discord.SelectOption(label="تعليق/استئناف", value="hold_resume", emoji="⏸️"),
-            discord.SelectOption(label="ملاحظة داخلية", value="add_note", emoji="📝"),
-            discord.SelectOption(label="سجل العمليات", value="audit_log", emoji="📜"),
-            discord.SelectOption(label="تعطيل/تفعيل الأدلة", value="toggle_evidence", emoji="🚫"),
-            discord.SelectOption(label="Transcript", value="generate_transcript", emoji="📄"),
-            discord.SelectOption(label="حذف نهائي", value="delete", emoji="🗑️"),
-            discord.SelectOption(label="🔄 ريستارت / إعادة تحديث القائمة", value="restart", emoji="🔄")
-        ], custom_id="sel_staff_sys")
+        super().__init__(ticket=ticket, lang=lang, placeholder="⚙️ أدوات النظام والأرشيف (System & Admin Operations)...", options=[
+            discord.SelectOption(label="إغلاق التذكرة", value="close", emoji="🔒", description="إنهاء وإغلاق التذكرة مع تصدير السجل"),
+            discord.SelectOption(label="إعادة فتح التذكرة", value="reopen", emoji="🔓", description="إلغاء الإغلاق واستئناف المحادثة"),
+            discord.SelectOption(label="قفل / فتح الشات للعضو", value="lock", emoji="🔐", description="منع صاحب التذكرة من الكتابة مؤقتاً أو السماح له"),
+            discord.SelectOption(label="تعليق / استئناف التذكرة", value="hold_resume", emoji="⏸️", description="وضع التذكرة في حالة تعليق انتظاراً للمعلومات"),
+            discord.SelectOption(label="إضافة ملاحظة إدارية داخلية", value="add_note", emoji="📝", description="تسجيل ملاحظة سرية مرئية للطاقم فقط"),
+            discord.SelectOption(label="تصدير السجل الكامل (Transcript)", value="generate_transcript", emoji="📄", description="إنشاء ملف HTML تفاعلي بكامل محادثات التذكرة"),
+            discord.SelectOption(label="عرض سجل عمليات التذكرة", value="audit_log", emoji="📜", description="استعراض كامل النشاطات والتحويلات المسجلة"),
+            discord.SelectOption(label="تعطيل / تفعيل رفع الأدلة", value="toggle_evidence", emoji="🚫", description="التحكم في إمكانية إرسال الأدلة من العضو"),
+            discord.SelectOption(label="حذف التذكرة نهائياً", value="delete", emoji="🗑️", description="حذف قناة التذكرة وكافة سجلاتها فوراً"),
+            discord.SelectOption(label="تحديث وتنشيط القائمة", value="restart", emoji="🔄", description="إعادة مزامنة صلاحيات وعناصر التذكرة")
+        ], custom_id="sel_staff_sys", row=2)
 
 class TicketControlView(View):
     def __init__(self, lang: str = "ar"):
@@ -650,55 +651,11 @@ class TicketControlView(View):
         self.add_item(StaffManagementSelect(dummy, lang))
         self.add_item(StaffSystemSelect(dummy, lang))
 
-    @discord.ui.button(label="📌 استلام", style=discord.ButtonStyle.success, emoji="📌", custom_id="btn_quick_claim", row=3)
-    async def btn_quick_claim(self, interaction: discord.Interaction, button: discord.ui.Button):
-        handler = TicketActionBase({"id": 0, "status": "open"}, self.lang)
-        ticket = db.get_ticket_by_channel(interaction.channel_id)
-        if not ticket:
-            return await interaction.response.send_message("❌ لم يتم العثور على بيانات التذكرة.", ephemeral=True)
-        if ticket.get("claimed_by"):
-            await handler.process_action(interaction, "unclaim")
-        else:
-            await handler.process_action(interaction, "claim")
-
-    @discord.ui.button(label="🔒 إغلاق", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="btn_quick_close", row=3)
-    async def btn_quick_close(self, interaction: discord.Interaction, button: discord.ui.Button):
-        handler = TicketActionBase({"id": 0, "status": "open"}, self.lang)
-        await handler.process_action(interaction, "close")
-
-    @discord.ui.button(label="💬 ردود جاهزة", style=discord.ButtonStyle.primary, emoji="💬", custom_id="btn_quick_canned", row=3)
+    @discord.ui.button(label="💬 الردود التلقائية / السريعة", style=discord.ButtonStyle.primary, emoji="💬", custom_id="btn_quick_canned", row=3)
     async def btn_quick_canned(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not PermissionHandler.is_staff(interaction.user) and not PermissionHandler.is_bot_owner(interaction.user.id):
             return await interaction.response.send_message("❌ هذا الخيار مخصص لطاقم الدعم الفني فقط.", ephemeral=True)
         from bot.views.canned_views import CannedResponseSelectView
         v = CannedResponseSelectView(interaction.guild_id)
         await interaction.response.send_message("💬 **اختر رداً سريعاً لإرساله داخل التذكرة:**", view=v, ephemeral=True)
-
-    @discord.ui.button(label="🔔 تنبيه العضو", style=discord.ButtonStyle.secondary, emoji="🔔", custom_id="btn_quick_ping_user", row=3)
-    async def btn_quick_ping_user(self, interaction: discord.Interaction, button: discord.ui.Button):
-        handler = TicketActionBase({"id": 0, "status": "open"}, self.lang)
-        await handler.process_action(interaction, "summon_member")
-
-    @discord.ui.button(label="📋 معلومات", style=discord.ButtonStyle.secondary, emoji="📋", custom_id="btn_ticket_quick_info", row=3)
-    async def btn_ticket_info(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        ticket = db.get_ticket_by_channel(interaction.channel_id)
-        if not ticket:
-            return await interaction.followup.send("❌ تعذر العثور على بيانات هذه التذكرة.", ephemeral=True)
-        handler = TicketActionBase(ticket, self.lang)
-        await handler._execute_info(interaction, ticket)
-
-    @discord.ui.button(label="📄 تصدير السجل", style=discord.ButtonStyle.secondary, emoji="📄", custom_id="btn_quick_transcript", row=4)
-    async def btn_quick_transcript(self, interaction: discord.Interaction, button: discord.ui.Button):
-        handler = TicketActionBase({"id": 0, "status": "open"}, self.lang)
-        await handler.process_action(interaction, "generate_transcript")
-
-    @discord.ui.button(label="🔄 ريستارت القائمة", style=discord.ButtonStyle.secondary, custom_id="btn_restart_ticket_controls", row=4)
-    async def btn_restart_controls(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer(ephemeral=True)
-        ticket = db.get_ticket_by_channel(interaction.channel_id)
-        if ticket:
-            is_hidden = ticket.get("is_hidden", 0)
-            await PermissionHandler.set_ticket_visibility(interaction.channel, interaction.guild, ticket, is_hidden=bool(is_hidden))
-        await interaction.followup.send("🔄 **تم إعادة تشغيل وتحديث قائمة التذكرة وصلاحياتها بنجاح!**", ephemeral=True)
 

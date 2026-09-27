@@ -5,11 +5,12 @@ from bot.config.locales import get_text
 from bot.utils.embeds import EmbedBuilder
 
 class FeedbackModal(Modal):
-    def __init__(self, ticket_id: int, staff_id: int, stars: int, lang: str = "ar"):
+    def __init__(self, ticket_id: int, staff_id: int, stars: int, guild_id: int = 0, lang: str = "ar"):
         super().__init__(title="⭐ إضافة تعليق وتقييم الموظف")
         self.ticket_id = ticket_id
         self.staff_id = staff_id
         self.stars = stars
+        self.guild_id = guild_id
         self.lang = lang
 
         self.comment = TextInput(
@@ -40,21 +41,24 @@ class FeedbackModal(Modal):
                 feedback=feedback_text
             )
 
-            guild_id = interaction.guild_id
-            ticket = db.get_ticket_by_id(self.ticket_id)
-            if not guild_id and ticket:
-                guild_id = ticket.get("guild_id")
+            # Determine guild_id
+            guild_id = self.guild_id or interaction.guild_id
+            if not guild_id:
+                ticket = db.get_ticket_by_id(self.ticket_id)
+                if ticket:
+                    guild_id = ticket.get("guild_id")
 
             # Calculate points tied to rating stars
             # 5 stars = +15 pts, 4 stars = +10 pts, 3 stars = +5 pts, 2 stars = 0 pts, 1 star = -5 pts
-            points_map = {5: 15, 4: 10, 3: 5, 2: 0, 1: -5}
+            points_map = {5: 15, 4: 10, 3: 5, 2: 1, 1: 0}
             awarded_points = points_map.get(self.stars, 5)
 
             if guild_id and self.staff_id:
                 db.update_staff_points(guild_id, self.staff_id, awarded_points)
                 db.add_staff_rating_stat(guild_id, self.staff_id, self.stars)
+                db.increment_staff_tickets(guild_id, self.staff_id)
 
-            # Log review in log_channel if configured, especially with alert if low rating
+            # Log review in log_channel if configured
             if guild_id:
                 guild_obj = interaction.guild or (interaction.client.get_guild(guild_id) if hasattr(interaction, "client") else None)
                 if guild_obj:
@@ -81,12 +85,12 @@ class FeedbackModal(Modal):
                             except Exception as ch_err:
                                 print(f"Could not send review embed to log channel: {ch_err}")
 
-            # Try deleting the original rating request message (with the 5 star buttons)
+            # Try deleting or disabling the rating request message
             if interaction.message:
                 try:
                     await interaction.message.delete()
-                except Exception as del_err:
-                    print(f"Could not delete rating prompt message: {del_err}")
+                except Exception:
+                    pass
 
             thank_you_embed = EmbedBuilder.create_embed(
                 title="⭐ شكراً جزيلاً لتقييمك!",
@@ -110,10 +114,11 @@ class FeedbackModal(Modal):
 
 
 class RatingView(View):
-    def __init__(self, ticket_id: int, staff_id: int, lang: str = "ar"):
+    def __init__(self, ticket_id: int, staff_id: int, guild_id: int = 0, lang: str = "ar"):
         super().__init__(timeout=86400)
         self.ticket_id = ticket_id
         self.staff_id = staff_id
+        self.guild_id = guild_id
         self.lang = lang
 
         for star in range(1, 6):
@@ -135,7 +140,7 @@ class RatingView(View):
                         pass
                 return await interaction.response.send_message("❌ لقد قمت بتقييم هذه التذكرة بالفعل!", ephemeral=True)
             
-            modal = FeedbackModal(ticket_id=self.ticket_id, staff_id=self.staff_id, stars=stars, lang=self.lang)
+            modal = FeedbackModal(ticket_id=self.ticket_id, staff_id=self.staff_id, stars=stars, guild_id=self.guild_id, lang=self.lang)
             await interaction.response.send_modal(modal)
         return callback
 

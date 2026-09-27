@@ -229,7 +229,7 @@ class TicketManagementCog(commands.Cog):
                     ),
                     color=EmbedBuilder.COLOR_PRIMARY
                 )
-                await owner.send(embed=rating_embed, view=RatingView(ticket['id'], staff_id, lang))
+                await owner.send(embed=rating_embed, view=RatingView(ticket['id'], staff_id, guild.id, lang))
                 db.mark_rating_prompt_sent(ticket.get("id", 0))
             except Exception as e:
                 print(f"Error sending rating DM: {e}")
@@ -440,7 +440,7 @@ class TicketManagementCog(commands.Cog):
                     ),
                     color=EmbedBuilder.COLOR_PRIMARY
                 )
-                await owner.send(embed=rating_embed, view=RatingView(ticket['id'], staff_id, lang))
+                await owner.send(embed=rating_embed, view=RatingView(ticket['id'], staff_id, guild.id, lang))
                 db.mark_rating_prompt_sent(ticket.get("id", 0))
             except Exception as e:
                 print(f"Error sending rating DM on delete_ticket: {e}")
