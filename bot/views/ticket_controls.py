@@ -16,10 +16,18 @@ from bot.views.modal_views import (
 
 # 1. Base Class for Action Handling
 class TicketActionBase(Select):
-    def __init__(self, ticket: dict, lang: str, placeholder: str, options: list, custom_id: str, row: int = None, **kwargs):
-        self.ticket = ticket
+    def __init__(self, ticket: dict = None, lang: str = "ar", placeholder: str = "", options: list = None, custom_id: str = None, row: int = None, **kwargs):
+        self.ticket = ticket or {}
         self.lang = lang
-        super().__init__(placeholder=placeholder, min_values=1, max_values=1, options=options, custom_id=custom_id, row=row, **kwargs)
+        super().__init__(
+            placeholder=placeholder or "اختر إجراءً...",
+            min_values=1,
+            max_values=1,
+            options=options or [discord.SelectOption(label="افتراضي", value="default")],
+            custom_id=custom_id or "sel_default",
+            row=row,
+            **kwargs
+        )
 
     async def callback(self, interaction: discord.Interaction):
         await self.process_action(interaction, self.values[0])
@@ -64,7 +72,7 @@ class TicketActionBase(Select):
         staff_actions = [
             "claim", "unclaim", "transfer", "toggle_hide", "department", "priority",
             "lock", "unlock", "reopen", "hold", "resume", "hold_resume", "toggle_hold", "add_note",
-            "audit_log", "generate_transcript", "delete", "rename", "summon_member", "owner",
+            "view_notes", "audit_log", "generate_transcript", "delete", "rename", "summon_member", "owner",
             "toggle_evidence", "view_evidence"
         ]
         
@@ -72,8 +80,8 @@ class TicketActionBase(Select):
             if not PermissionHandler.is_staff(member) and not PermissionHandler.is_bot_owner(member.id):
                 return await interaction.response.send_message("❌ عفواً! هذه الخيارات والأوامر مخصصة فقط لإدارة وطاقم الدعم الفني.", ephemeral=True)
 
-            # Restrict Evidence management and critical system actions to Admin rank
-            if action in ["toggle_evidence", "view_evidence", "delete", "audit_log", "generate_transcript"]:
+            # Restrict critical destructive actions to Admin rank
+            if action in ["toggle_evidence", "delete", "audit_log", "generate_transcript"]:
                 if not PermissionHandler.is_admin(member) and not PermissionHandler.is_bot_owner(member.id):
                     return await interaction.response.send_message("❌ عفواً! هذا الخيار مخصص فقط لمسؤولي الإدارة (Admin).", ephemeral=True)
 
@@ -186,7 +194,7 @@ class TicketActionBase(Select):
                     return await interaction.followup.send(embed=embed, view=workflow_view)
 
         # For other actions, defer immediately to prevent "Application did not respond"
-        await interaction.response.defer(ephemeral=True if action in ["info", "audit_log", "toggle_hide"] else False)
+        await interaction.response.defer(ephemeral=True if action in ["info", "audit_log", "toggle_hide", "view_evidence", "view_notes"] else False)
 
         if action == "claim":
             await self._execute_claim(interaction, guild, member, ticket, ticket_user_id)
@@ -220,6 +228,8 @@ class TicketActionBase(Select):
             await self._execute_toggle_evidence(interaction, guild, member, ticket)
         elif action == "view_evidence":
             await self._execute_view_evidence(interaction, ticket)
+        elif action == "view_notes":
+            await self._execute_view_notes(interaction, ticket)
         elif action == "generate_transcript":
             await self._execute_generate_transcript(interaction, guild, member, ticket)
         elif action == "delete":
@@ -442,33 +452,86 @@ class TicketActionBase(Select):
 
     async def _execute_lock(self, interaction, guild, member, ticket, ticket_user_id):
         owner = guild.get_member(ticket_user_id) if ticket_user_id else None
-        if owner: await interaction.channel.set_permissions(owner, view_channel=False)
+        if not owner and ticket_user_id:
+            try: owner = await guild.fetch_member(ticket_user_id)
+            except Exception: owner = None
+
+        if owner and isinstance(owner, discord.Member):
+            # القفل: إخفاء الروم بالكامل عن صاحب التذكرة ومنع الكتابة
+            await interaction.channel.set_permissions(owner, view_channel=False, send_messages=False)
+
         db.update_ticket_status(interaction.channel_id, "locked")
-        await interaction.followup.send("🔐 تم قفل التذكرة.")
+        embed = EmbedBuilder.create_embed(
+            title="🔐 تم قفل التذكرة",
+            description=(
+                f"تم قفل التذكرة بواسطة {member.mention}.\n\n"
+                f"🚫 **تم إخفاء الروم بالكامل عن صاحب التذكرة** ولن يتمكن من رؤيته حتى يتم فك القفل."
+            ),
+            color=EmbedBuilder.COLOR_DANGER
+        )
+        await interaction.followup.send(embed=embed)
+        await TicketLogger.log_action(guild, ticket, "قفل التذكرة", member, details="تم إخفاء الروم عن صاحب التذكرة")
 
     async def _execute_unlock(self, interaction, guild, member, ticket, ticket_user_id):
         owner = guild.get_member(ticket_user_id) if ticket_user_id else None
-        if owner: await interaction.channel.set_permissions(owner, view_channel=True, send_messages=True)
+        if not owner and ticket_user_id:
+            try: owner = await guild.fetch_member(ticket_user_id)
+            except Exception: owner = None
+
+        if owner and isinstance(owner, discord.Member):
+            # فك القفل: إعادة إظهار الروم لصاحب التذكرة والسماح له بالرؤية والكتابة
+            await interaction.channel.set_permissions(owner, view_channel=True, send_messages=True, attach_files=True, embed_links=True)
+
         new_st = "claimed" if ticket.get("claimed_by") else "open"
         db.update_ticket_status(interaction.channel_id, new_st)
-        await interaction.followup.send("🔓 تم فتح التذكرة.")
+        embed = EmbedBuilder.create_embed(
+            title="🔓 تم فك قفل التذكرة",
+            description=f"تم فك قفل التذكرة وإعادة إظهارها لصاحب التذكرة بواسطة {member.mention}.",
+            color=EmbedBuilder.COLOR_SUCCESS
+        )
+        await interaction.followup.send(embed=embed)
+        await TicketLogger.log_action(guild, ticket, "فك قفل التذكرة", member, details="تمت إعادة إظهار الروم لصاحب التذكرة")
 
     async def _execute_hold_resume(self, interaction, guild, member, ticket, ticket_user_id, action):
         current_status = ticket.get("status", "open")
         owner = guild.get_member(ticket_user_id) if ticket_user_id else None
+        if not owner and ticket_user_id:
+            try: owner = await guild.fetch_member(ticket_user_id)
+            except Exception: owner = None
+
         if current_status == "on_hold" or action == "resume":
-            if owner: await interaction.channel.set_permissions(owner, view_channel=True, send_messages=True)
-            db.update_ticket_status(interaction.channel_id, "claimed" if ticket.get("claimed_by") else "open")
-            await interaction.followup.send("▶️ تم استئناف التذكرة.")
+            if owner and isinstance(owner, discord.Member):
+                # الاستئناف: السماح للعضو بالكتابة مجدداً مع إبقاء الرؤية
+                await interaction.channel.set_permissions(owner, view_channel=True, send_messages=True, attach_files=True, embed_links=True)
+            new_st = "claimed" if ticket.get("claimed_by") else "open"
+            db.update_ticket_status(interaction.channel_id, new_st)
+            embed = EmbedBuilder.create_embed(
+                title="▶️ تم استئناف التذكرة",
+                description=f"تم استئناف التذكرة والسماح لصاحب التذكرة {owner.mention if owner else ''} بالكتابة مجدداً بواسطة {member.mention}.",
+                color=EmbedBuilder.COLOR_SUCCESS
+            )
+            await interaction.followup.send(embed=embed)
+            await TicketLogger.log_action(guild, ticket, "استئناف التذكرة", member)
         else:
-            if owner: await interaction.channel.set_permissions(owner, view_channel=True, send_messages=False)
+            if owner and isinstance(owner, discord.Member):
+                # التعليق: منع العضو من الكتابة فقط مع إبقاء الروم مرئياً له للقراءة (view_channel=True, send_messages=False)
+                await interaction.channel.set_permissions(owner, view_channel=True, send_messages=False)
             db.update_ticket_status(interaction.channel_id, "on_hold")
-            await interaction.followup.send("⏸️ تم تعليق التذكرة.")
+            embed = EmbedBuilder.create_embed(
+                title="⏸️ تم تعليق التذكرة",
+                description=(
+                    f"تم وضع التذكرة في حالة تعليق بواسطة {member.mention}.\n\n"
+                    f"⚠️ **تم منع صاحب التذكرة من الكتابة فقط** مع إمكانية متابعة وقراءة الرسائل."
+                ),
+                color=EmbedBuilder.COLOR_WARNING
+            )
+            await interaction.followup.send(embed=embed)
+            await TicketLogger.log_action(guild, ticket, "تعليق التذكرة", member, details="تم منع صاحب التذكرة من الكتابة فقط")
 
     async def _execute_restart(self, interaction, guild, member, ticket):
         is_hidden = ticket.get("is_hidden", 0)
         await PermissionHandler.set_ticket_visibility(interaction.channel, guild, ticket, is_hidden=bool(is_hidden))
-        await interaction.followup.send("🔄 تم إعادة التحديث.", ephemeral=True)
+        await interaction.followup.send("🔄 تم إعادة التحديث ومزامنة الصلاحيات بنجاح.", ephemeral=True)
 
     async def _execute_info(self, interaction, ticket):
         ticket_id = ticket.get('id', 'N/A')
@@ -483,23 +546,34 @@ class TicketActionBase(Select):
         status_display = {
             "open": "مفتوحة 🟢",
             "claimed": "مستلمة 🟡",
-            "on_hold": "معلقة ⏸️",
+            "on_hold": "معلقة ⏸️ (منع كتابة)",
+            "locked": "مقفلة 🔐 (مخفية عن العضو)",
             "closed": "مغلقة 🔒"
         }.get(status, status)
 
         embed = EmbedBuilder.create_embed(
             title=f"📋 تفاصيل ومعلومات التذكرة #{ticket_id}",
-            description=f"هذه هي البيانات والتفاصيل الكاملة للتذكرة والقسم:",
+            description=f"هذه هي البيانات والتفاصيل الشاملة للتذكرة والقسم:",
             color=EmbedBuilder.COLOR_INFO
         )
         embed.add_field(name="👤 صاحب التذكرة", value=f"<@{user_id}>\n`({user_id})`", inline=True)
         embed.add_field(name="🏷️ القسم", value=f"`{department}`", inline=True)
         embed.add_field(name="⚡ الأولوية", value=f"`{priority}`", inline=True)
         embed.add_field(name="🔒 الحالة الحالية", value=f"{status_display}", inline=True)
-        embed.add_field(name="👔 المستلم", value=f"<@{claimed_by}>" if claimed_by else "*لم تستلم بعد*", inline=True)
+        embed.add_field(name="👔 الموظف المستلم", value=f"<@{claimed_by}>" if claimed_by else "*لم تستلم بعد*", inline=True)
         auth_staff = ticket.get('authorized_staff_id')
         embed.add_field(name="🔐 الإداري المخول", value=f"<@{auth_staff}>" if auth_staff else "*لا يوجد*", inline=True)
-        embed.add_field(name="📅 تاريخ الفتح", value=f"{created_at[:16]}", inline=True)
+        embed.add_field(name="📅 تاريخ ووقت الفتح", value=f"{created_at[:16]}", inline=True)
+
+        # Show evidence & notes counts for staff
+        if PermissionHandler.is_staff(interaction.user) or PermissionHandler.is_bot_owner(interaction.user.id):
+            ev_list = db.get_ticket_evidence(ticket.get("id", 0))
+            notes_list = db.get_internal_notes(ticket.get("id", 0))
+            embed.add_field(
+                name="🛡️ بيانات طاقم الدعم",
+                value=f"• **الأدلة المرفقة:** `{len(ev_list)}` دليل\n• **الملاحظات الداخلية:** `{len(notes_list)}` ملاحظة",
+                inline=True
+            )
 
         if form_answers and form_answers.strip():
             embed.add_field(
@@ -516,16 +590,100 @@ class TicketActionBase(Select):
 
     async def _execute_audit_log(self, interaction, ticket):
         audits = db.get_audit_logs(ticket.get("id"))
-        log_text = "\n".join([f"• {a['action']} بواسطة <@{a['executor_id']}>" for a in audits[-5:]])
-        await interaction.followup.send(f"📜 سجل العمليات:\n{log_text or 'لا يوجد'}", ephemeral=True)
+        if not audits:
+            return await interaction.followup.send("📜 لا توجد أي عمليات أو سجلات مسجلة لهذه التذكرة بعد.", ephemeral=True)
+
+        embed = EmbedBuilder.create_embed(
+            title=f"📜 سجل عمليات التذكرة #{ticket.get('id')}",
+            description="قائمة بآخر الإجراءات والعمليات المنفذة على هذه التذكرة:\n",
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+        lines = []
+        for a in audits[-10:]:
+            details_str = f" ({a['details']})" if a.get('details') else ""
+            dt = a.get('created_at', '')[:16]
+            lines.append(f"• **{a['action']}** بواسطة <@{a['executor_id']}>{details_str} - `{dt}`")
+
+        embed.description += "\n".join(lines)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     async def _execute_toggle_evidence(self, interaction, guild, member, ticket):
         new_state = db.toggle_ticket_evidence(interaction.channel_id)
-        await interaction.followup.send(f"⚙️ حالة الأدلة: {'مفعلة' if new_state else 'معطلة'}")
+        st_text = "مفعلة ✅ (يمكن للأعضاء رفع الأدلة)" if new_state else "معطلة 🚫 (تم إيقاف رفع الأدلة)"
+        await interaction.followup.send(f"⚙️ تم تغيير حالة رفع الأدلة: **{st_text}**")
 
     async def _execute_view_evidence(self, interaction, ticket):
-        ev = db.get_ticket_evidence(ticket.get("id", 0))
-        await interaction.followup.send(f"📸 عدد الأدلة: {len(ev)}", ephemeral=True)
+        ticket_id = ticket.get("id", 0)
+        ev_list = db.get_ticket_evidence(ticket_id)
+        if not ev_list:
+            embed = EmbedBuilder.create_embed(
+                title=f"📸 الأدلة والمرفقات المسجلة • تذكرة #{ticket_id}",
+                description="ℹ️ **لا توجد أي أدلة أو صور أو روابط مرفقة لهذه التذكرة حتى الآن.**",
+                color=EmbedBuilder.COLOR_WARNING
+            )
+            return await interaction.followup.send(embed=embed, ephemeral=True)
+
+        embed = EmbedBuilder.create_embed(
+            title=f"📸 الأدلة والمرفقات المسجلة • تذكرة #{ticket_id}",
+            description=f"إجمالي الأدلة المرفقة: **{len(ev_list)}** دليل\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n",
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+
+        first_image_url = None
+        for idx, item in enumerate(ev_list, 1):
+            u_id = item.get("user_id")
+            url = item.get("evidence_url", "")
+            note = item.get("note") or "بدون وصف"
+            created = item.get("created_at", "")[:16]
+
+            # Detect image extensions for preview
+            if not first_image_url and any(url.lower().endswith(ext) or ext in url.lower() for ext in [".png", ".jpg", ".jpeg", ".gif", ".webp"]):
+                first_image_url = url
+
+            embed.add_field(
+                name=f"📌 دليل #{idx}",
+                value=(
+                    f"• **المرسل:** <@{u_id}> (`{u_id}`)\n"
+                    f"• **الوصف/الملاحظة:** {note}\n"
+                    f"• **الرابط:** [🔗 اضغط هنا لفتح الدليل / الصورة]({url})\n"
+                    f"• **التاريخ:** `{created}`"
+                ),
+                inline=False
+            )
+
+        if first_image_url:
+            embed.set_image(url=first_image_url)
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    async def _execute_view_notes(self, interaction, ticket):
+        ticket_id = ticket.get("id", 0)
+        notes_list = db.get_internal_notes(ticket_id)
+        if not notes_list:
+            embed = EmbedBuilder.create_embed(
+                title=f"📝 الملاحظات الإدارية الداخلية • تذكرة #{ticket_id}",
+                description="ℹ️ **لا توجد أي ملاحظات سرية مسجلة من قبل الطاقم لهذه التذكرة حتى الآن.**\n*(يمكنك إضافة ملاحظة سرية من القائمة المنسدلة: إضافة ملاحظة إدارية داخلية)*",
+                color=EmbedBuilder.COLOR_WARNING
+            )
+            return await interaction.followup.send(embed=embed, ephemeral=True)
+
+        embed = EmbedBuilder.create_embed(
+            title=f"📝 الملاحظات الإدارية الداخلية • تذكرة #{ticket_id}",
+            description=f"إجمالي الملاحظات السرية المسجلة: **{len(notes_list)}** ملاحظة\n*(هذه الملاحظات سرية وخاصة بطاقم الدعم فقط)*\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n",
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+
+        for idx, n in enumerate(notes_list, 1):
+            auth_id = n.get("author_id")
+            content = n.get("content", "")
+            created = n.get("created_at", "")[:16]
+            embed.add_field(
+                name=f"📝 ملاحظة #{idx} • كُتبت بواسطة <@{auth_id}>",
+                value=f"{content}\n`📅 {created}`",
+                inline=False
+            )
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     async def _execute_generate_transcript(self, interaction, guild, member, ticket):
         from bot.utils.transcript_generator import TranscriptGenerator
@@ -631,9 +789,10 @@ class StaffSystemSelect(TicketActionBase):
         super().__init__(ticket=ticket, lang=lang, placeholder="⚙️ أدوات النظام والأرشيف (System & Admin Operations)...", options=[
             discord.SelectOption(label="إغلاق التذكرة", value="close", emoji="🔒", description="إنهاء وإغلاق التذكرة مع تصدير السجل"),
             discord.SelectOption(label="إعادة فتح التذكرة", value="reopen", emoji="🔓", description="إلغاء الإغلاق واستئناف المحادثة"),
-            discord.SelectOption(label="قفل / فتح الشات للعضو", value="lock", emoji="🔐", description="منع صاحب التذكرة من الكتابة مؤقتاً أو السماح له"),
-            discord.SelectOption(label="تعليق / استئناف التذكرة", value="hold_resume", emoji="⏸️", description="وضع التذكرة في حالة تعليق انتظاراً للمعلومات"),
+            discord.SelectOption(label="قفل / فتح الشات للعضو", value="lock", emoji="🔐", description="إخفاء الروم بالكامل عن العضو أو إظهاره"),
+            discord.SelectOption(label="تعليق / استئناف التذكرة", value="hold_resume", emoji="⏸️", description="منع صاحب التذكرة من الكتابة فقط أو السماح له"),
             discord.SelectOption(label="إضافة ملاحظة إدارية داخلية", value="add_note", emoji="📝", description="تسجيل ملاحظة سرية مرئية للطاقم فقط"),
+            discord.SelectOption(label="عرض الملاحظات الداخلية", value="view_notes", emoji="🔍", description="استعراض كامل الملاحظات السرية المسجلة من الطاقم"),
             discord.SelectOption(label="تصدير السجل الكامل (Transcript)", value="generate_transcript", emoji="📄", description="إنشاء ملف HTML تفاعلي بكامل محادثات التذكرة"),
             discord.SelectOption(label="عرض سجل عمليات التذكرة", value="audit_log", emoji="📜", description="استعراض كامل النشاطات والتحويلات المسجلة"),
             discord.SelectOption(label="تعطيل / تفعيل رفع الأدلة", value="toggle_evidence", emoji="🚫", description="التحكم في إمكانية إرسال الأدلة من العضو"),
