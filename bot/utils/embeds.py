@@ -53,24 +53,15 @@ class EmbedBuilder:
 
         # Show categories summary in embed if provided
         if categories:
-            priority_badges = {
-                "منخفضة": "🟢 منخفضة",
-                "متوسطة": "🟡 متوسطة",
-                "عالية": "🟠 عالية",
-                "طارئة": "🔴 طارئة وحرجة",
-                "Low": "🟢 منخفضة",
-                "Medium": "🟡 متوسطة",
-                "High": "🟠 عالية",
-                "Urgent": "🔴 طارئة وحرجة"
-            }
             cat_lines = []
             for cat in categories:
                 emoji = cat.get('emoji', '📌')
                 name = cat.get('name', 'قسم')
                 desc = cat.get('description', '')
-                p_val = cat.get('priority')
-                p_text = f" • [{priority_badges.get(p_val, p_val)}]" if p_val else ""
-                cat_lines.append(f"{emoji} **{name}**{p_text}\n↳ {desc}")
+                if desc and desc.strip():
+                    cat_lines.append(f"{emoji} **{name}**\n↳ {desc}")
+                else:
+                    cat_lines.append(f"{emoji} **{name}**")
             if cat_lines:
                 embed.add_field(
                     name="📂 الأقسام المتاحة / Available Categories:",
