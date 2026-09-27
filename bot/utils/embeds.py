@@ -86,53 +86,36 @@ class EmbedBuilder:
     @staticmethod
     def ticket_welcome_embed(user: discord.Member, category_name: str, lang: str = "ar", guild: Optional[discord.Guild] = None, priority: str = "متوسطة", color: Optional[int] = None) -> discord.Embed:
         server_name = guild.name if guild else "Discord Server"
-        priority_badges = {
-            "منخفضة": "🟢 منخفضة (Low)",
-            "متوسطة": "🟡 متوسطة (Medium)",
-            "عالية": "🟠 عالية (High)",
-            "طارئة": "🔴 طارئة وحرجة (Urgent)",
-            "Low": "🟢 منخفضة (Low)",
-            "Medium": "🟡 متوسطة (Medium)",
-            "High": "🟠 عالية (High)",
-            "Urgent": "🔴 طارئة وحرجة (Urgent)"
-        }
-        badge = priority_badges.get(priority, f"🟡 {priority}")
+        server_icon = guild.icon.url if (guild and guild.icon) else None
+        user_avatar = user.display_avatar.url if (user and hasattr(user, "display_avatar") and user.display_avatar) else None
         chosen_color = color if color is not None else EmbedBuilder.COLOR_PRIMARY
 
         embed = discord.Embed(
-            title=f"🎫 تذكرة دعم فني جديدة • {category_name}",
+            title="🎫 تذكرة دعم فني جديدة",
             description=(
-                f"مرحباً بك {user.mention} في نظام الدعم الفني لسيرفر **{server_name}** 👋\n\n"
-                f"يرجى كتابة تفاصيل استفسارك أو مشكلتك بوضوح، وسيقوم فريق الدعم المختص بمتابعة طلبك والرد عليك بأسرع وقت ممكن.\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                f"أهلاً ومرحباً بك {user.mention} 👋 في مركز الدعم الفني الخاص بـ **{server_name}**.\n\n"
+                f"يرجى توضيح استفسارك أو مشكلتك هنا بالتفصيل، وسيقوم فريق الدعم الفني بالرد عليك ومساعدتك في أقرب وقت.\n"
+                f"───────────────────────────"
             ),
             color=chosen_color
         )
 
-        embed.add_field(
-            name="📌 معلومات التذكرة",
-            value=(
-                f"• **صاحب التذكرة:** {user.mention} (`{user.id}`)\n"
-                f"• **القسم المعني:** `{category_name}`\n"
-                f"• **درجة الأولوية:** `{badge}`"
-            ),
-            inline=False
-        )
+        embed.add_field(name="🏷️ القسم", value=f"**{category_name}**", inline=True)
 
-        embed.add_field(
-            name="⚙️ لوحة التحكم والإجراءات",
-            value=(
-                f"• استخدم **القوائم المنسدلة أسفل هذه الرسالة** لتنفيذ جميع العمليات والأوامر (إغلاق، استلام، نقل، أدلة، معلومات).\n"
-                f"• زر **الردود التلقائية / السريعة** متاح لطاقم الدعم لإرسال نماذج الرد الجاهزة بضغطة واحدة."
-            ),
-            inline=False
-        )
+        # Server icon as author/header
+        if server_name:
+            embed.set_author(name=server_name, icon_url=server_icon)
 
-        if guild and guild.icon:
-            embed.set_thumbnail(url=guild.icon.url)
-            embed.set_footer(text=f"{server_name} • نظام التذاكر المتقدم", icon_url=guild.icon.url)
+        # Ticket opener's avatar as thumbnail
+        if user_avatar:
+            embed.set_thumbnail(url=user_avatar)
+
+        # Footer with server icon
+        if server_icon:
+            embed.set_footer(text=f"{server_name} • نظام التذاكر المتقدم", icon_url=server_icon)
         else:
-            embed.set_footer(text="نظام التذاكر المتقدم • Discord Ticket System")
+            embed.set_footer(text=f"{server_name} • نظام التذاكر المتقدم")
+
         embed.timestamp = discord.utils.utcnow()
         return embed
 

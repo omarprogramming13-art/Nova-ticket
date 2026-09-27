@@ -651,6 +651,15 @@ class TicketControlView(View):
         self.add_item(StaffManagementSelect(dummy, lang))
         self.add_item(StaffSystemSelect(dummy, lang))
 
+    @discord.ui.button(label="📋 معلومات وتفاصيل التذكرة", style=discord.ButtonStyle.success, emoji="📋", custom_id="btn_ticket_full_info", row=3)
+    async def btn_ticket_full_info(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        ticket = db.get_ticket_by_channel(interaction.channel_id)
+        if not ticket:
+            return await interaction.followup.send("❌ تعذر العثور على بيانات هذه التذكرة.", ephemeral=True)
+        handler = TicketActionBase(ticket, self.lang)
+        await handler._execute_info(interaction, ticket)
+
     @discord.ui.button(label="💬 الردود التلقائية / السريعة", style=discord.ButtonStyle.primary, emoji="💬", custom_id="btn_quick_canned", row=3)
     async def btn_quick_canned(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not PermissionHandler.is_staff(interaction.user) and not PermissionHandler.is_bot_owner(interaction.user.id):

@@ -1750,7 +1750,7 @@ class InteractivePanelEditorView(View):
             b_survey.callback = survey_cb
             self.add_item(b_survey)
 
-            b_priority = Button(label="⚡ أهمية القسم", style=discord.ButtonStyle.secondary, emoji="⚡", row=2)
+            b_priority = Button(label="⚡ أهمية القسم", style=discord.ButtonStyle.secondary, emoji="⚡", row=3)
             async def priority_cb(i: discord.Interaction):
                 v = CategoryPrioritySelectView(self, cur_cat)
                 await i.response.edit_message(embed=v.build_embed(), view=v)
