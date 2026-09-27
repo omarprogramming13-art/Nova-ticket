@@ -16,10 +16,10 @@ from bot.views.modal_views import (
 
 # 1. Base Class for Action Handling
 class TicketActionBase(Select):
-    def __init__(self, ticket: dict, lang: str, placeholder: str, options: list, custom_id: str):
+    def __init__(self, ticket: dict, lang: str, placeholder: str, options: list, custom_id: str, row: int = None, **kwargs):
         self.ticket = ticket
         self.lang = lang
-        super().__init__(placeholder=placeholder, min_values=1, max_values=1, options=options, custom_id=custom_id)
+        super().__init__(placeholder=placeholder, min_values=1, max_values=1, options=options, custom_id=custom_id, row=row, **kwargs)
 
     async def callback(self, interaction: discord.Interaction):
         await self.process_action(interaction, self.values[0])
