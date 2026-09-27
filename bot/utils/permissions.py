@@ -145,8 +145,17 @@ class PermissionHandler:
         if action_name in ["info", "summon_staff"]:
             return True
 
+        if action_name in ["authorize_staff", "unauthorize_staff"]:
+            if ticket_user_id and member.id == ticket_user_id:
+                return True
+            if guild and (member.id == guild.owner_id or member.guild_permissions.administrator):
+                return True
+            return False
+
         if action_name == "close":
             if ticket_user_id and member.id == ticket_user_id:
+                return True
+            if ticket_data and ticket_data.get("authorized_staff_id") and member.id == ticket_data.get("authorized_staff_id"):
                 return True
 
         if action_name in ["add_member", "remove_member"]:

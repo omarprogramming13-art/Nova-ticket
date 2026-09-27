@@ -88,6 +88,94 @@ class NonComplaintClosureModal(Modal):
             timeout_duration=0
         )
 
+class AuthorizedStaffSurveyModal(Modal):
+    def __init__(self, ticket_id: int, on_complete):
+        super().__init__(title="🔐 استبيان الإداري المخول الشامل")
+        self.ticket_id = ticket_id
+        self.on_complete = on_complete
+
+        self.ticket_type_input = TextInput(
+            label="نوع التذكرة (شكوى / اقتراح / عام)",
+            placeholder="اكتب: شكوى أو اقتراح أو عام",
+            default="عام",
+            style=discord.TextStyle.short,
+            required=True
+        )
+        self.handled_input = TextInput(
+            label="هل تم التعامل/حل المشكلة؟ (نعم / لا)",
+            placeholder="اكتب: نعم أو لا",
+            default="نعم",
+            style=discord.TextStyle.short,
+            required=True
+        )
+        self.result_input = TextInput(
+            label="النتيجة أو العقوبة (تايم أوت / تحذير / تم الحل)",
+            placeholder="مثال: تم الحل ودي / تايم أوت / تحذير رسمي / تم القبول / تم الرفض",
+            default="تم الحل ودي",
+            style=discord.TextStyle.short,
+            required=True
+        )
+        self.evidence = TextInput(
+            label="رابط الأدلة إن وجد (اختياري)",
+            placeholder="انسخ رابط الصورة أو الفيديو هنا...",
+            style=discord.TextStyle.paragraph,
+            required=False
+        )
+        self.details = TextInput(
+            label="تفاصيل الحيثيات وسبب الإنهاء",
+            placeholder="اكتب ملخص التعامل مع التذكرة وسبب الإنهاء...",
+            style=discord.TextStyle.paragraph,
+            required=True
+        )
+        self.add_item(self.ticket_type_input)
+        self.add_item(self.handled_input)
+        self.add_item(self.result_input)
+        self.add_item(self.evidence)
+        self.add_item(self.details)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw_type = self.ticket_type_input.value.strip().lower()
+        if "شكوى" in raw_type or "complaint" in raw_type:
+            t_type = "complaint"
+        elif "اقتراح" in raw_type or "suggest" in raw_type:
+            t_type = "suggestion"
+        else:
+            t_type = "general"
+
+        raw_handled = self.handled_input.value.strip().lower()
+        handled = 1 if ("نعم" in raw_handled or "yes" in raw_handled or "true" in raw_handled or "1" in raw_handled) else 0
+
+        raw_res = self.result_input.value.strip()
+        punishment_type = "none"
+        complaint_accepted = 0
+        if "تايم" in raw_res or "timeout" in raw_res.lower():
+            punishment_type = "timeout"
+            complaint_accepted = 1
+        elif "رسمي" in raw_res or "official" in raw_res.lower():
+            punishment_type = "official_warning"
+            complaint_accepted = 1
+        elif "شفهي" in raw_res or "verbal" in raw_res.lower():
+            punishment_type = "verbal_warning"
+            complaint_accepted = 1
+        elif "ودي" in raw_res or "حل" in raw_res or "قبول" in raw_res or "accepted" in raw_res.lower():
+            punishment_type = "friendly" if t_type == "complaint" else "accepted"
+            complaint_accepted = 1
+        else:
+            punishment_type = "rejected" if t_type != "complaint" else "none"
+            complaint_accepted = 0
+
+        details_full = f"[إجراء بتخويل من صاحب التذكرة]\n{self.details.value}"
+
+        await self.on_complete(
+            interaction=interaction,
+            ticket_type=t_type,
+            user_handled=handled,
+            punishment_type=punishment_type,
+            complaint_accepted=complaint_accepted,
+            evidence=self.evidence.value or "",
+            details=details_full
+        )
+
 class ClosureWorkflowView(View):
     def __init__(self, ticket_id: int, original_action: str, lang: str = "ar"):
         super().__init__(timeout=600)
@@ -110,11 +198,39 @@ class ClosureWorkflowView(View):
 
         self.add_user_buttons()
 
+    def is_ticket_user_or_authorized(self, user_id: int) -> bool:
+        ticket = db.get_ticket_by_id(self.ticket_id) or {}
+        owner_id = ticket.get("user_id")
+        auth_id = ticket.get("authorized_staff_id")
+        return (user_id == owner_id) or (auth_id is not None and user_id == auth_id)
+
+    def is_staff_allowed(self, user: discord.Member) -> bool:
+        ticket = db.get_ticket_by_id(self.ticket_id) or {}
+        claimed_by = ticket.get("claimed_by")
+        auth_id = ticket.get("authorized_staff_id")
+        if auth_id and user.id == auth_id:
+            return True
+        if claimed_by and user.id == claimed_by:
+            return True
+        return PermissionHandler.is_staff(user)
+
     def add_user_buttons(self):
         self.clear_items()
+        ticket = db.get_ticket_by_id(self.ticket_id) or {}
+        auth_id = ticket.get("authorized_staff_id")
         
+        if auth_id:
+            btn_auth = Button(
+                label="🔐 استبيان الإداري المخول (إنهاء مباشر)",
+                style=discord.ButtonStyle.primary,
+                custom_id="auth_quick_survey"
+            )
+            btn_auth.callback = self.authorized_survey_callback
+            self.add_item(btn_auth)
+
+        placeholder = "1️⃣ (صاحب التذكرة أو الإداري المخول) اختر نوع التذكرة..." if auth_id else "1️⃣ (صاحب التذكرة) اختر نوع الاستبيان / التذكرة..."
         select_type = Select(
-            placeholder="1️⃣ (صاحب التذكرة) اختر نوع الاستبيان / التذكرة...",
+            placeholder=placeholder,
             options=[
                 discord.SelectOption(label="🚨 تيكت شكوى (Complaint)", value="complaint", emoji="🚨", description="شكوى ضد عضو أو إداري أو مخالفة"),
                 discord.SelectOption(label="💡 تيكت اقتراح (Suggestion)", value="suggestion", emoji="💡", description="اقتراح جديد لتطوير السيرفر"),
@@ -136,6 +252,27 @@ class ClosureWorkflowView(View):
         btn_skip = Button(label="⏩ تخطي الاستبيان (إنهاء فوراً)", style=discord.ButtonStyle.secondary, custom_id="skip_survey")
         btn_skip.callback = self.skip_survey_callback
         self.add_item(btn_skip)
+
+    async def authorized_survey_callback(self, interaction: discord.Interaction):
+        ticket = db.get_ticket_by_id(self.ticket_id) or {}
+        auth_id = ticket.get("authorized_staff_id")
+        is_owner = (interaction.guild and interaction.user.id == interaction.guild.owner_id) or PermissionHandler.is_bot_owner(interaction.user.id)
+        if (not auth_id or interaction.user.id != auth_id) and not is_owner:
+            return await interaction.response.send_message("❌ هذا الإجراء مخصص فقط للإداري المخول من قبل صاحب التذكرة.", ephemeral=True)
+
+        await interaction.response.send_modal(AuthorizedStaffSurveyModal(self.ticket_id, self.authorized_survey_complete))
+
+    async def authorized_survey_complete(self, interaction: discord.Interaction, ticket_type: str, user_handled: int, punishment_type: str, complaint_accepted: int, evidence: str, details: str):
+        self.ticket_type = ticket_type
+        self.user_handled = user_handled
+        self.punishment_type = punishment_type
+        self.complaint_accepted = complaint_accepted
+        self.evidence_urls = evidence
+        self.staff_details = details
+        self.staff_punished = 1 if punishment_type in ["timeout", "official_warning", "verbal_warning"] else 0
+        self.user_answered = True
+        self.staff_answered = True
+        await self.update_workflow(interaction)
 
     async def skip_survey_callback(self, interaction: discord.Interaction):
         is_owner = (
@@ -176,9 +313,9 @@ class ClosureWorkflowView(View):
             await self.final_callback()
 
     async def user_type_callback(self, interaction: discord.Interaction):
-        ticket = db.get_ticket_by_id(self.ticket_id)
-        if interaction.user.id != ticket.get("user_id"):
-            return await interaction.response.send_message("❌ هذا الاختيار مخصص لصاحب التذكرة فقط.", ephemeral=True)
+        ticket = db.get_ticket_by_id(self.ticket_id) or {}
+        if not self.is_ticket_user_or_authorized(interaction.user.id):
+            return await interaction.response.send_message("❌ هذا الاختيار مخصص لصاحب التذكرة أو الإداري المخول فقط.", ephemeral=True)
 
         self.ticket_type = interaction.data["values"][0]
         type_labels = {
@@ -186,21 +323,20 @@ class ClosureWorkflowView(View):
             "suggestion": "💡 اقتراح",
             "general": "💬 استفسار / دعم فني عام"
         }
-        await interaction.response.send_message(f"✅ تم تحديد نوع التذكرة بواسطة صاحب التذكرة: **{type_labels.get(self.ticket_type, self.ticket_type)}**. يرجى الآن الضغط على زر (نعم) أو (لا) للإنهاء.", ephemeral=True)
+        role_label = "الإداري المخول" if interaction.user.id != ticket.get("user_id") else "صاحب التذكرة"
+        await interaction.response.send_message(f"✅ تم تحديد نوع التذكرة بواسطة {role_label}: **{type_labels.get(self.ticket_type, self.ticket_type)}**. يرجى الآن الضغط على زر (نعم) أو (لا) للإنهاء.", ephemeral=True)
 
     async def user_yes_callback(self, interaction: discord.Interaction):
-        ticket = db.get_ticket_by_id(self.ticket_id)
-        if interaction.user.id != ticket.get("user_id"):
-            return await interaction.response.send_message("❌ هذا السؤال مخصص لصاحب التذكرة فقط.", ephemeral=True)
+        if not self.is_ticket_user_or_authorized(interaction.user.id):
+            return await interaction.response.send_message("❌ هذا السؤال مخصص لصاحب التذكرة أو الإداري المخول فقط.", ephemeral=True)
 
         self.user_handled = 1
         self.user_answered = True
         await self.update_workflow(interaction)
 
     async def user_no_callback(self, interaction: discord.Interaction):
-        ticket = db.get_ticket_by_id(self.ticket_id)
-        if interaction.user.id != ticket.get("user_id"):
-            return await interaction.response.send_message("❌ هذا السؤال مخصص لصاحب التذكرة فقط.", ephemeral=True)
+        if not self.is_ticket_user_or_authorized(interaction.user.id):
+            return await interaction.response.send_message("❌ هذا السؤال مخصص لصاحب التذكرة أو الإداري المخول فقط.", ephemeral=True)
 
         self.user_handled = 0
         self.user_answered = True
@@ -241,9 +377,8 @@ class ClosureWorkflowView(View):
         self.add_item(btn_skip)
 
     async def staff_complaint_option_callback(self, interaction: discord.Interaction):
-        ticket = db.get_ticket_by_id(self.ticket_id)
-        if interaction.user.id != ticket.get("claimed_by"):
-            return await interaction.response.send_message("❌ هذا الإجراء مخصص للموظف المستلم فقط.", ephemeral=True)
+        if not self.is_staff_allowed(interaction.user):
+            return await interaction.response.send_message("❌ هذا الإجراء مخصص للموظف المستلم أو الإداري المخول فقط.", ephemeral=True)
 
         val = interaction.data["values"][0]
         self.punishment_type = val
@@ -257,9 +392,8 @@ class ClosureWorkflowView(View):
         await interaction.response.send_message(f"✅ تم تحديد العقوبة / النتيجة: **{val}**. يرجى الآن الضغط على زر التعبئة لإنهاء الاستبيان.", ephemeral=True)
 
     async def staff_non_complaint_option_callback(self, interaction: discord.Interaction):
-        ticket = db.get_ticket_by_id(self.ticket_id)
-        if interaction.user.id != ticket.get("claimed_by"):
-            return await interaction.response.send_message("❌ هذا الإجراء مخصص للموظف المستلم فقط.", ephemeral=True)
+        if not self.is_staff_allowed(interaction.user):
+            return await interaction.response.send_message("❌ هذا الإجراء مخصص للموظف المستلم أو الإداري المخول فقط.", ephemeral=True)
 
         val = interaction.data["values"][0]
         self.complaint_accepted = 1 if val == "accepted" else 0
@@ -269,9 +403,8 @@ class ClosureWorkflowView(View):
         await interaction.response.send_message(f"✅ تم تحديد النتيجة: **{val}**. يرجى الآن الضغط على زر التعبئة لإنهاء الاستبيان.", ephemeral=True)
 
     async def staff_modal_trigger(self, interaction: discord.Interaction):
-        ticket = db.get_ticket_by_id(self.ticket_id)
-        if interaction.user.id != ticket.get("claimed_by"):
-            return await interaction.response.send_message("❌ هذا الإجراء مخصص للموظف المستلم فقط.", ephemeral=True)
+        if not self.is_staff_allowed(interaction.user):
+            return await interaction.response.send_message("❌ هذا الإجراء مخصص للموظف المستلم أو الإداري المخول فقط.", ephemeral=True)
 
         if self.ticket_type == "complaint":
             await interaction.response.send_modal(ComplaintClosureModal(self.ticket_id, self.staff_modal_complete))

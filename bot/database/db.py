@@ -229,7 +229,8 @@ class DatabaseManager:
                     member_responded {int_type} DEFAULT 1,
                     category_points {int_type} DEFAULT 0,
                     evidence_enabled {int_type} DEFAULT 1,
-                    form_answers {text_type} DEFAULT ''
+                    form_answers {text_type} DEFAULT '',
+                    authorized_staff_id BIGINT DEFAULT NULL
                 )""",
                 f"""CREATE TABLE IF NOT EXISTS ticket_evidence (
                     id {pk_type},
@@ -339,6 +340,15 @@ class DatabaseManager:
                     executor_id BIGINT NOT NULL,
                     ticket_id {int_type} DEFAULT 0,
                     created_at {text_type} NOT NULL
+                )""",
+                f"""CREATE TABLE IF NOT EXISTS canned_responses (
+                    id {pk_type},
+                    guild_id BIGINT NOT NULL,
+                    shortcut {text_type} NOT NULL,
+                    title {text_type} NOT NULL,
+                    content {text_type} NOT NULL,
+                    created_by BIGINT NOT NULL,
+                    created_at {text_type} NOT NULL
                 )"""
             ]
             
@@ -372,6 +382,46 @@ class DatabaseManager:
                     if not cursor.fetchone():
                         cursor.execute("ALTER TABLE tickets ADD COLUMN form_answers TEXT DEFAULT '';")
 
+                    cursor.execute("""
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name='tickets' AND column_name='authorized_staff_id';
+                    """)
+                    if not cursor.fetchone():
+                        cursor.execute("ALTER TABLE tickets ADD COLUMN authorized_staff_id BIGINT DEFAULT NULL;")
+
+                    cursor.execute("""
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name='tickets' AND column_name='priority';
+                    """)
+                    if not cursor.fetchone():
+                        cursor.execute("ALTER TABLE tickets ADD COLUMN priority VARCHAR(50) DEFAULT 'عادية';")
+
+                    cursor.execute("""
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name='tickets' AND column_name='department';
+                    """)
+                    if not cursor.fetchone():
+                        cursor.execute("ALTER TABLE tickets ADD COLUMN department VARCHAR(100) DEFAULT '';")
+
+                    cursor.execute("""
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name='tickets' AND column_name='inactivity_warned';
+                    """)
+                    if not cursor.fetchone():
+                        cursor.execute("ALTER TABLE tickets ADD COLUMN inactivity_warned INTEGER DEFAULT 0;")
+
+                    cursor.execute("""
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name='guild_settings' AND column_name='auto_close_hours';
+                    """)
+                    if not cursor.fetchone():
+                        cursor.execute("ALTER TABLE guild_settings ADD COLUMN auto_close_hours INTEGER DEFAULT 0;")
+
                     for col, col_type in [("ticket_type", "VARCHAR(255) DEFAULT 'general'"), ("complaint_accepted", "INTEGER DEFAULT 0"), ("punished_user_id", "BIGINT DEFAULT 0"), ("timeout_duration", "INTEGER DEFAULT 0")]:
                         cursor.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name='closure_info' AND column_name='{col}';")
                         if not cursor.fetchone():
@@ -388,6 +438,19 @@ class DatabaseManager:
                         cursor.execute("ALTER TABLE tickets ADD COLUMN evidence_enabled INTEGER DEFAULT 1;")
                     if "form_answers" not in cols:
                         cursor.execute("ALTER TABLE tickets ADD COLUMN form_answers TEXT DEFAULT '';")
+                    if "authorized_staff_id" not in cols:
+                        cursor.execute("ALTER TABLE tickets ADD COLUMN authorized_staff_id BIGINT DEFAULT NULL;")
+                    if "priority" not in cols:
+                        cursor.execute("ALTER TABLE tickets ADD COLUMN priority TEXT DEFAULT 'عادية';")
+                    if "department" not in cols:
+                        cursor.execute("ALTER TABLE tickets ADD COLUMN department TEXT DEFAULT '';")
+                    if "inactivity_warned" not in cols:
+                        cursor.execute("ALTER TABLE tickets ADD COLUMN inactivity_warned INTEGER DEFAULT 0;")
+
+                    cursor.execute("PRAGMA table_info(guild_settings)")
+                    g_cols = [row[1] for row in cursor.fetchall()]
+                    if "auto_close_hours" not in g_cols:
+                        cursor.execute("ALTER TABLE guild_settings ADD COLUMN auto_close_hours INTEGER DEFAULT 0;")
 
                     cursor.execute("PRAGMA table_info(closure_info)")
                     c_cols = [row[1] for row in cursor.fetchall()]
@@ -524,11 +587,11 @@ class DatabaseManager:
         self._run_query("DELETE FROM panels WHERE id = ?", (panel_id,))
 
     # --- Ticket Operations ---
-    def create_ticket(self, guild_id: int, channel_id: int, user_id: int, panel_id: int, category_id: str, points: int = 0, form_answers: str = "") -> int:
+    def create_ticket(self, guild_id: int, channel_id: int, user_id: int, panel_id: int, category_id: str, points: int = 0, form_answers: str = "", priority: str = "عادية", department: str = "") -> int:
         ticket_id = self._run_query("""
-        INSERT INTO tickets (guild_id, channel_id, user_id, panel_id, category_id, status, created_at, category_points, form_answers)
-        VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?)
-        """, (guild_id, channel_id, user_id, panel_id, category_id, datetime.utcnow().isoformat(), points, form_answers or ""), fetch="lastrowid")
+        INSERT INTO tickets (guild_id, channel_id, user_id, panel_id, category_id, status, created_at, category_points, form_answers, priority, department)
+        VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)
+        """, (guild_id, channel_id, user_id, panel_id, category_id, datetime.utcnow().isoformat(), points, form_answers or "", priority or "عادية", department or category_id), fetch="lastrowid")
         
         if not ticket_id:
             res = self.get_ticket_by_channel(channel_id)
@@ -578,6 +641,13 @@ class DatabaseManager:
 
     def claim_ticket(self, channel_id: int, staff_id: Optional[int]):
         self._run_query("UPDATE tickets SET claimed_by = ? WHERE channel_id = ?", (staff_id, channel_id))
+
+    def authorize_ticket_staff(self, channel_id: int, staff_id: Optional[int]):
+        self._run_query("UPDATE tickets SET authorized_staff_id = ? WHERE channel_id = ?", (staff_id, channel_id))
+
+    def get_ticket_authorized_staff(self, channel_id: int) -> Optional[int]:
+        res = self.get_ticket_by_channel(channel_id)
+        return res.get("authorized_staff_id") if res else None
 
     def set_first_response(self, channel_id: int):
         self._run_query("UPDATE tickets SET first_response_at = ? WHERE channel_id = ? AND first_response_at IS NULL", (datetime.utcnow().isoformat(), channel_id))
@@ -1091,6 +1161,57 @@ class DatabaseManager:
                 ))
 
         self.log_settings_change(guild_id, executor_id, "IMPORT_CONFIG", f"Imported {len(panels)} panels and guild settings")
+
+    # --- Canned Responses (Quick Replies) ---
+    def get_canned_responses(self, guild_id: int) -> list:
+        rows = self._run_query("SELECT * FROM canned_responses WHERE guild_id = ? ORDER BY id ASC", (guild_id,), fetch="all")
+        if not rows:
+            default_responses = [
+                ("ترحيب", "👋 ترحيب واستفسار", "مرحباً بك! 👋 يرجى توضيح استفسارك أو مشكلتك بالتفصيل وسيقوم أحد أعضاء فريق الدعم بالرد عليك ومساعدتك بأسرع وقت."),
+                ("معلومات", "📋 طلب بيانات إضافية", "يرجى تزويدنا برقم الآيدي الخاص بك مع إرفاق أي صور أو لقطات شاشة توضيحية ليتسنى لنا فحص المشكلة بدقة."),
+                ("تحقق", "⏳ جاري الفحص والتحقق", "تم استلام طلبك وجاري التحقق من التفاصيل بالتنسيق مع الإدارة المعنية، نرجو التكرم بالانتظار قليلاً."),
+                ("تم_الحل", "✅ تأكيد حل المشكلة", "تم معالجة استفسارك والانتهاء من طلبك بنجاح! إذا كان لديك أي سؤال إضافي نحن بالخدمة دوماً.")
+            ]
+            now = datetime.utcnow().isoformat()
+            for shortc, titl, cont in default_responses:
+                self._run_query("""
+                    INSERT INTO canned_responses (guild_id, shortcut, title, content, created_by, created_at)
+                    VALUES (?, ?, ?, ?, 0, ?)
+                """, (guild_id, shortc, titl, cont, now))
+            rows = self._run_query("SELECT * FROM canned_responses WHERE guild_id = ? ORDER BY id ASC", (guild_id,), fetch="all")
+        return rows or []
+
+    def add_canned_response(self, guild_id: int, shortcut: str, title: str, content: str, created_by: int = 0) -> int:
+        now = datetime.utcnow().isoformat()
+        return self._run_query("""
+            INSERT INTO canned_responses (guild_id, shortcut, title, content, created_by, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (guild_id, shortcut, title, content, created_by, now), fetch="lastrowid")
+
+    def delete_canned_response(self, response_id: int, guild_id: int) -> bool:
+        self._run_query("DELETE FROM canned_responses WHERE id = ? AND guild_id = ?", (response_id, guild_id))
+        return True
+
+    # --- Staff Leaderboard & Ranking ---
+    def get_staff_leaderboard(self, guild_id: int, limit: int = 10) -> list:
+        rows = self._run_query("""
+            SELECT user_id, points, tickets_handled, total_stars, total_ratings,
+                   CASE WHEN total_ratings > 0 THEN ROUND(CAST(total_stars AS FLOAT) / total_ratings, 2) ELSE 0.0 END as avg_stars
+            FROM staff_stats
+            WHERE guild_id = ?
+            ORDER BY points DESC, tickets_handled DESC, avg_stars DESC
+            LIMIT ?
+        """, (guild_id, limit), fetch="all")
+        return rows or []
+
+    # --- Inactivity Auto-Close Helper Methods ---
+    def get_open_tickets_for_inactivity(self, guild_id: int = None) -> list:
+        if guild_id:
+            return self._run_query("SELECT * FROM tickets WHERE status = 'open' AND guild_id = ?", (guild_id,), fetch="all") or []
+        return self._run_query("SELECT * FROM tickets WHERE status = 'open'", fetch="all") or []
+
+    def mark_ticket_inactivity_warned(self, channel_id: int, warned: int = 1):
+        self._run_query("UPDATE tickets SET inactivity_warned = ? WHERE channel_id = ?", (warned, channel_id))
 
 db = DatabaseManager()
 

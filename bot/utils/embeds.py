@@ -53,12 +53,24 @@ class EmbedBuilder:
 
         # Show categories summary in embed if provided
         if categories:
+            priority_badges = {
+                "منخفضة": "🟢 منخفضة",
+                "متوسطة": "🟡 متوسطة",
+                "عالية": "🟠 عالية",
+                "طارئة": "🔴 طارئة وحرجة",
+                "Low": "🟢 منخفضة",
+                "Medium": "🟡 متوسطة",
+                "High": "🟠 عالية",
+                "Urgent": "🔴 طارئة وحرجة"
+            }
             cat_lines = []
             for cat in categories:
                 emoji = cat.get('emoji', '📌')
                 name = cat.get('name', 'قسم')
                 desc = cat.get('description', '')
-                cat_lines.append(f"{emoji} **{name}**\n↳ {desc}")
+                p_val = cat.get('priority')
+                p_text = f" • [{priority_badges.get(p_val, p_val)}]" if p_val else ""
+                cat_lines.append(f"{emoji} **{name}**{p_text}\n↳ {desc}")
             if cat_lines:
                 embed.add_field(
                     name="📂 الأقسام المتاحة / Available Categories:",
@@ -72,17 +84,31 @@ class EmbedBuilder:
         return embed
 
     @staticmethod
-    def ticket_welcome_embed(user: discord.Member, category_name: str, lang: str = "ar", guild: Optional[discord.Guild] = None) -> discord.Embed:
+    def ticket_welcome_embed(user: discord.Member, category_name: str, lang: str = "ar", guild: Optional[discord.Guild] = None, priority: str = "متوسطة", color: Optional[int] = None) -> discord.Embed:
         server_name = guild.name if guild else "Discord Server"
+        priority_badges = {
+            "منخفضة": "🟢 منخفضة (Low)",
+            "متوسطة": "🟡 متوسطة (Medium)",
+            "عالية": "🟠 عالية (High)",
+            "طارئة": "🔴 طارئة وحرجة (Urgent)",
+            "Low": "🟢 منخفضة (Low)",
+            "Medium": "🟡 متوسطة (Medium)",
+            "High": "🟠 عالية (High)",
+            "Urgent": "🔴 طارئة وحرجة (Urgent)"
+        }
+        badge = priority_badges.get(priority, f"🟡 {priority}")
+        chosen_color = color if color is not None else EmbedBuilder.COLOR_PRIMARY
 
         embed = discord.Embed(
             title=f"🎫 مرحباً بك في تذكرة الدعم الفني",
             description=(
                 f"أهلاً بك {user.mention} 👋 في مركز الدعم الفني الخاص بـ **{server_name}**.\n\n"
+                f"• **القسم:** `{category_name}`\n"
+                f"• **أهمية القسم / الأولوية:** `{badge}`\n\n"
                 f"يرجى توضيح استفسارك أو مشكلتك هنا وسيقوم أحد أعضاء فريق الدعم بالرد عليك ومساعدتك بأسرع وقت.\n\n"
                 f"💡 *يمكنك استعراض تفاصيل التذكرة، القسم، والأولوية عبر خيار **معلومات وتفاصيل التذكرة** من القائمة أسفله.*"
             ),
-            color=EmbedBuilder.COLOR_PRIMARY
+            color=chosen_color
         )
         return embed
 

@@ -156,12 +156,16 @@ class TicketManagementCog(commands.Cog):
 
             workflow_view.final_callback = final_callback
             
+            auth_id = ticket.get("authorized_staff_id")
+            auth_notice = f"\n🔐 **تم تخويل الإداري:** <@{auth_id}> للقيام بإجراءات الاستبيان نيابة عن صاحب التذكرة.\n" if auth_id else ""
+
             embed = EmbedBuilder.create_embed(
                 title="⚠️ متطلبات إغلاق التذكرة",
                 description=(
                     "يرجى استكمال بيانات الإغلاق أولاً عبر الأزرار في القائمة.\n"
-                    "1️⃣ صاحب التذكرة: تحديد نوع التذكرة وهل تم حل الطلب.\n"
+                    "1️⃣ صاحب التذكرة (أو الإداري المخول): تحديد نوع التذكرة وهل تم حل الطلب.\n"
                     "2️⃣ الموظف المستلم: تحديد نتيجة الإجراء والتفاصيل.\n"
+                    f"{auth_notice}"
                     "*(ملاحظة: لمالك السيرفر (Owner) فقط زر تخطي الاستبيان عند الحاجة)*"
                 ),
                 color=EmbedBuilder.COLOR_WARNING
@@ -372,11 +376,15 @@ class TicketManagementCog(commands.Cog):
 
             workflow_view.final_callback = final_callback
             
+            auth_id = ticket.get("authorized_staff_id")
+            auth_notice = f"\n🔐 **تم تخويل الإداري:** <@{auth_id}> للقيام بإجراءات الاستبيان نيابة عن صاحب التذكرة.\n" if auth_id else ""
+
             embed = EmbedBuilder.create_embed(
                 title="⚠️ متطلبات حذف التذكرة",
                 description=(
                     "يرجى استكمال بيانات الإغلاق أولاً عبر الأزرار في القائمة.\n"
-                    "يجب على صاحب التذكرة والموظف الإجابة على الأسئلة المطلوبة قبل الحذف.\n"
+                    "يجب على صاحب التذكرة (أو الإداري المخول) والموظف الإجابة على الأسئلة المطلوبة قبل الحذف.\n"
+                    f"{auth_notice}"
                     "*(ملاحظة: لمالك السيرفر (Owner) فقط زر تخطي الاستبيان عند الحاجة)*"
                 ),
                 color=EmbedBuilder.COLOR_WARNING
@@ -759,6 +767,98 @@ class TicketManagementCog(commands.Cog):
             embed.set_thumbnail(url=member.display_avatar.url)
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="authorize", description="تخويل إداري بالقيام بإجراءات الاستبيان نيابة عن صاحب التذكرة / Authorize staff for survey")
+    @app_commands.describe(admin="الإداري أو عضو طاقم الدعم المراد تخويله / Staff member to authorize")
+    async def authorize(self, interaction: discord.Interaction, admin: discord.Member):
+        ticket = db.get_ticket_by_channel(interaction.channel_id)
+        if not ticket:
+            return await interaction.response.send_message("❌ هذه القناة ليست تذكرة صالحة.", ephemeral=True)
+
+        ticket_user_id = ticket.get("user_id")
+        is_owner = (interaction.user.id == ticket_user_id)
+        is_admin = (interaction.guild and interaction.user.id == interaction.guild.owner_id) or \
+                   PermissionHandler.is_bot_owner(interaction.user.id) or \
+                   interaction.user.guild_permissions.administrator
+
+        if not (is_owner or is_admin):
+            return await interaction.response.send_message("❌ هذا الأمر مخصص فقط لمن قام بفتح التذكرة (صاحب التذكرة) لتخويل أحد الإداريين.", ephemeral=True)
+
+        if admin.bot:
+            return await interaction.response.send_message("❌ لا يمكنك تخويل بوت، يجب اختيار إداري أو موظف دعم.", ephemeral=True)
+
+        if admin.id == ticket_user_id:
+            return await interaction.response.send_message("⚠️ لا يمكنك تخويل صاحب التذكرة نفسه، الهدف من التخويل هو منح الصلاحية لإداري للقيام بالإجراءات نيابة عنك.", ephemeral=True)
+
+        if not PermissionHandler.is_staff(admin) and not admin.guild_permissions.administrator and admin.id != interaction.guild.owner_id:
+            return await interaction.response.send_message("⚠️ العضو المحدد ليس من طاقم الإدارة أو الدعم الفني. يجب اختيار إداري أو موظف دعم معتمد.", ephemeral=True)
+
+        db.authorize_ticket_staff(interaction.channel_id, admin.id)
+
+        embed = EmbedBuilder.create_embed(
+            title="🔐 تم تخويل الإداري للاستبيان بنجاح",
+            description=(
+                f"قام صاحب التذكرة {interaction.user.mention} بتخويل الإداري {admin.mention} رسمياً.\n\n"
+                f"📋 **ماذا يعني هذا؟**\n"
+                f"• يستطيع الإداري المخول ({admin.mention}) الآن القيام بكافة إجراءات الاستبيان (تحديد نوع التذكرة، نتيجة التعامل، والحيثيات) نيابة عن صاحب التذكرة دون الحاجة لانتظاره.\n"
+                f"• يمكن للإداري إنهاء إجراءات إغلاق أو حذف التذكرة مباشرة وبسلاسة.\n\n"
+                f"*(يمكن لصاحب التذكرة إلغاء التخويل بأي وقت عبر أمر `/unauthorize`)*"
+            ),
+            color=EmbedBuilder.COLOR_SUCCESS
+        )
+        await interaction.response.send_message(content=f"{admin.mention}", embed=embed)
+
+        try:
+            from bot.utils.logger import TicketLogger
+            await TicketLogger.log_action(
+                guild=interaction.guild,
+                ticket=ticket,
+                action_name="تخويل إداري",
+                executor=interaction.user,
+                details=f"تم تخويل الإداري: {admin.display_name} ({admin.id}) لإجراءات الاستبيان"
+            )
+        except Exception:
+            pass
+
+    @app_commands.command(name="unauthorize", description="إلغاء تخويل الإداري من إجراءات الاستبيان / Revoke staff survey authorization")
+    async def unauthorize(self, interaction: discord.Interaction):
+        ticket = db.get_ticket_by_channel(interaction.channel_id)
+        if not ticket:
+            return await interaction.response.send_message("❌ هذه القناة ليست تذكرة صالحة.", ephemeral=True)
+
+        ticket_user_id = ticket.get("user_id")
+        is_owner = (interaction.user.id == ticket_user_id)
+        is_admin = (interaction.guild and interaction.user.id == interaction.guild.owner_id) or \
+                   PermissionHandler.is_bot_owner(interaction.user.id) or \
+                   interaction.user.guild_permissions.administrator
+
+        if not (is_owner or is_admin):
+            return await interaction.response.send_message("❌ هذا الأمر مخصص فقط لصاحب التذكرة لإلغاء التخويل.", ephemeral=True)
+
+        current_auth = ticket.get("authorized_staff_id")
+        if not current_auth:
+            return await interaction.response.send_message("⚠️ لا يوجد أي إداري مخول حالياً على هذه التذكرة.", ephemeral=True)
+
+        db.authorize_ticket_staff(interaction.channel_id, None)
+
+        embed = EmbedBuilder.create_embed(
+            title="🔓 تم إلغاء تخويل الإداري",
+            description=f"تم إلغاء تخويل الإداري <@{current_auth}> بنجاح بواسطة {interaction.user.mention}. عادت صلاحية إجراء الاستبيان لصاحب التذكرة فقط.",
+            color=EmbedBuilder.COLOR_INFO
+        )
+        await interaction.response.send_message(embed=embed)
+
+        try:
+            from bot.utils.logger import TicketLogger
+            await TicketLogger.log_action(
+                guild=interaction.guild,
+                ticket=ticket,
+                action_name="إلغاء تخويل",
+                executor=interaction.user,
+                details=f"تم إلغاء تخويل الإداري: {current_auth}"
+            )
+        except Exception:
+            pass
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(TicketManagementCog(bot))

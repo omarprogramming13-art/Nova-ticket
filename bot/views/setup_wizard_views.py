@@ -602,6 +602,18 @@ class InAppSettingsDashboardView(View):
         wizard_sessions[interaction.user.id] = session
         await interaction.response.send_modal(PanelBasicInfoModal(session))
 
+    @discord.ui.button(label="✏️ تعديل لوحة قائمة", style=discord.ButtonStyle.primary, emoji="✏️", custom_id="dash_edit_panel", row=1)
+    async def btn_edit_panel(self, interaction: discord.Interaction, button: Button):
+        if not await check_perm_or_deny(interaction):
+            return
+
+        panels = db.get_panels() or []
+        if not panels:
+            return await interaction.response.send_message("❌ لا توجد لوحات تذاكر منشأة بعد للتعديل. يمكنك إنشاء لوحة جديدة أولاً.", ephemeral=True)
+
+        v = SelectPanelToEditView(self.bot, panels)
+        await interaction.response.send_message("🎯 **اختر اللوحة التي تريد تعديلها بالكامل من القائمة أسفله:**", view=v, ephemeral=True)
+
     @discord.ui.button(label="📋 قناة السجلات (Logs)", style=discord.ButtonStyle.secondary, emoji="📋", custom_id="dash_set_log_channel", row=1)
     async def btn_set_log_channel(self, interaction: discord.Interaction, button: Button):
         if not await check_perm_or_deny(interaction):
@@ -805,22 +817,322 @@ class PanelEditInfoModal(Modal):
         await interaction.response.send_message("✅ **تم تحديث معلومات اللوحة المؤقتة. انقر على 'حفظ وتحديث اللوحة الحية' لتطبيق التغييرات.**", ephemeral=True)
 
 
+class SelectPanelToEditView(View):
+    def __init__(self, bot: discord.Client, panels: List[Dict[str, Any]]):
+        super().__init__(timeout=None)
+        self.bot = bot
+        self.panels = panels
+
+        options = []
+        for p in panels[:25]:
+            ch_str = f"#{p.get('channel_id')}" if p.get("channel_id") else "غير منشورة"
+            cats_count = len(p.get("categories", []))
+            options.append(discord.SelectOption(
+                label=f"لوحة #{p['id']}: {p['title'][:40]}",
+                value=str(p["id"]),
+                description=f"{cats_count} أقسام • القناة: {ch_str}"[:100],
+                emoji="🎯"
+            ))
+
+        select = Select(
+            placeholder="🎯 اختر اللوحة المراد تعديلها بالكامل...",
+            options=options,
+            min_values=1,
+            max_values=1,
+            custom_id="select_panel_to_edit"
+        )
+        select.callback = self.on_panel_selected
+        self.add_item(select)
+
+    async def on_panel_selected(self, interaction: discord.Interaction):
+        if not await check_perm_or_deny(interaction):
+            return
+
+        panel_id = int(interaction.data["values"][0])
+        panel = db.get_panel_by_id(panel_id)
+        if not panel:
+            return await interaction.response.send_message(f"❌ لم يتم العثور على لوحة بالمعرف `{panel_id}`.", ephemeral=True)
+
+        editor_view = InteractivePanelEditorView(self.bot, panel)
+        embed = editor_view.build_editor_embed(interaction.guild)
+        await interaction.response.edit_message(content=None, embed=embed, view=editor_view)
+
+
+class PanelTargetChannelView(View):
+    def __init__(self, editor_view: "InteractivePanelEditorView", panel_data: Dict[str, Any]):
+        super().__init__(timeout=None)
+        self.editor_view = editor_view
+        self.panel_data = panel_data
+
+        select = ChannelSelect(
+            placeholder="📌 اختر القناة لنشر / نقل اللوحة إليها...",
+            channel_types=[discord.ChannelType.text],
+            min_values=1,
+            max_values=1
+        )
+        async def ch_cb(i: discord.Interaction):
+            ch_id = int(i.data["values"][0])
+            self.panel_data["channel_id"] = ch_id
+            embed = self.build_embed(i.guild)
+            await i.response.edit_message(embed=embed, view=self)
+        select.callback = ch_cb
+        self.add_item(select)
+
+        b_back = Button(label="🔙 حفظ ورجوع لمحرّر اللوحة", style=discord.ButtonStyle.primary, emoji="🔙", row=1)
+        async def back_cb(i: discord.Interaction):
+            self.editor_view.refresh_components()
+            embed = self.editor_view.build_editor_embed(i.guild)
+            await i.response.edit_message(embed=embed, view=self.editor_view)
+        b_back.callback = back_cb
+        self.add_item(b_back)
+
+    def build_embed(self, guild: discord.Guild) -> discord.Embed:
+        ch_id = self.panel_data.get("channel_id")
+        ch_str = f"<#{ch_id}>" if ch_id else "لم تحدد بعد"
+        embed = discord.Embed(
+            title=f"📌 قناة نشر اللوحة #{self.panel_data.get('id', 'جديدة')}",
+            description=(
+                f"**القناة الحالية:** {ch_str}\n\n"
+                f"اختر القناة الكتابية التي تريد إرسال وتحديث رسالة اللوحة فيها، ثم اضغط على زر الحفظ والرجوع للمحرّر."
+            ),
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+        return embed
+
+
+PRESET_COLORS = [
+    ("🔵 Blurple", 0x5865F2),
+    ("🟢 Emerald", 0x57F287),
+    ("🔴 Coral", 0xED4245),
+    ("🟡 Gold", 0xFEE75C),
+    ("🟣 Purple", 0x9B59B6),
+    ("🖤 Dark", 0x2B2D31),
+    ("💎 Cyan", 0x00B0F4),
+    ("🟠 Orange", 0xE67E22),
+]
+
+class PanelCustomColorModal(Modal):
+    def __init__(self, panel_data: Dict[str, Any], editor_view: "InteractivePanelEditorView"):
+        super().__init__(title="🎨 لون إيمبد اللوحة الأساسية (Hex)")
+        self.panel_data = panel_data
+        self.editor_view = editor_view
+
+        curr_color = panel_data.get("color", EmbedBuilder.COLOR_PRIMARY)
+        self.color_input = TextInput(
+            label="كود اللون Hex (مثال: #5865F2)",
+            default=f"#{curr_color:06X}",
+            required=True,
+            max_length=10
+        )
+        self.add_item(self.color_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not await check_perm_or_deny(interaction):
+            return
+
+        hex_str = self.color_input.value.strip().replace("#", "")
+        try:
+            color_int = int(hex_str, 16)
+        except ValueError:
+            color_int = EmbedBuilder.COLOR_PRIMARY
+
+        self.panel_data["color"] = color_int
+        self.editor_view.refresh_components()
+        await interaction.response.send_message(
+            f"✅ **تم تغيير لون إيمبد اللوحة الأساسية إلى:** `#{color_int:06X}`\n"
+            f"💡 *اضغط على زر 'حفظ وتحديث اللوحة الحية' في المحرّر لتطبيق التغيير فوراً على رسالة اللوحة.*",
+            ephemeral=True
+        )
+
+
+class PanelColorPickerView(View):
+    def __init__(self, editor_view: "InteractivePanelEditorView", panel_data: Dict[str, Any]):
+        super().__init__(timeout=None)
+        self.editor_view = editor_view
+        self.panel_data = panel_data
+        self.refresh_items()
+
+    def refresh_items(self):
+        self.clear_items()
+        curr_color = self.panel_data.get("color", EmbedBuilder.COLOR_PRIMARY)
+
+        def make_cb(col):
+            async def cb(i: discord.Interaction):
+                self.panel_data["color"] = col
+                self.refresh_items()
+                await i.response.edit_message(embed=self.build_embed(), view=self)
+            return cb
+
+        for idx, (name, col_val) in enumerate(PRESET_COLORS[:6]):
+            is_active = (curr_color == col_val)
+            b = Button(
+                label=name,
+                style=discord.ButtonStyle.success if is_active else discord.ButtonStyle.secondary,
+                row=0 if idx < 3 else 1
+            )
+            b.callback = make_cb(col_val)
+            self.add_item(b)
+
+        b_custom = Button(label="✏️ كود Hex مخصص", style=discord.ButtonStyle.primary, emoji="✏️", row=2)
+        async def custom_cb(i: discord.Interaction):
+            await i.response.send_modal(PanelCustomColorModal(self.panel_data, self.editor_view))
+        b_custom.callback = custom_cb
+        self.add_item(b_custom)
+
+        b_back = Button(label="🔙 حفظ ورجوع للمحرّر", style=discord.ButtonStyle.primary, emoji="🔙", row=2)
+        async def back_cb(i: discord.Interaction):
+            self.editor_view.refresh_components()
+            embed = self.editor_view.build_editor_embed(i.guild)
+            await i.response.edit_message(embed=embed, view=self.editor_view)
+        b_back.callback = back_cb
+        self.add_item(b_back)
+
+    def build_embed(self) -> discord.Embed:
+        curr_color = self.panel_data.get("color", EmbedBuilder.COLOR_PRIMARY)
+        embed = discord.Embed(
+            title="🎨 اختيار لون إيمبد اللوحة الأساسية",
+            description=(
+                f"تحكّم في لون الشريط الجانبي للإيمبد الرئيسي للوحة التذاكر كما يظهر للأعضاء.\n\n"
+                f"• **اللون الحالي:** `#{curr_color:06X}`\n\n"
+                f"📌 *اضغط على أحد الألوان الجاهزة لتطبيقه فوراً، أو اختر 'كود Hex مخصص' لإدخال أي لون تفضله.*"
+            ),
+            color=curr_color
+        )
+        return embed
+
+
+class CategoryCustomColorModal(Modal):
+    def __init__(self, category_data: Dict[str, Any], editor_view: "InteractivePanelEditorView"):
+        super().__init__(title=f"🎨 لون إيمبد: {category_data.get('name', '')[:20]}")
+        self.category_data = category_data
+        self.editor_view = editor_view
+
+        cat_col = category_data.get("color")
+        default_val = f"#{cat_col:06X}" if cat_col is not None else ""
+        self.color_input = TextInput(
+            label="كود اللون Hex (مثال: #5865F2)",
+            placeholder="مثال: #5865F2 أو اتركه فارغاً لاتباع اللوحة",
+            default=default_val,
+            required=False,
+            max_length=10
+        )
+        self.add_item(self.color_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not await check_perm_or_deny(interaction):
+            return
+
+        val = self.color_input.value.strip().replace("#", "")
+        if not val:
+            self.category_data["color"] = None
+            msg = f"✅ **تمت إعادة ضبط لون قسم `{self.category_data.get('name')}` ليتطابق مع اللوحة الأساسية.**"
+        else:
+            try:
+                col_int = int(val, 16)
+                self.category_data["color"] = col_int
+                msg = f"✅ **تم تغيير لون إيمبد قسم `{self.category_data.get('name')}` إلى:** `#{col_int:06X}`"
+            except ValueError:
+                self.category_data["color"] = None
+                msg = "⚠️ كود اللون غير صحيح، تم تعيين اللون الافتراضي."
+
+        self.editor_view.refresh_components()
+        await interaction.response.send_message(
+            f"{msg}\n💡 *اضغط على زر 'حفظ وتحديث اللوحة الحية' في المحرّر لتطبيق التغييرات.*",
+            ephemeral=True
+        )
+
+
+class CategoryColorPickerView(View):
+    def __init__(self, editor_view: "InteractivePanelEditorView", category_data: Dict[str, Any]):
+        super().__init__(timeout=None)
+        self.editor_view = editor_view
+        self.category_data = category_data
+        self.refresh_items()
+
+    def refresh_items(self):
+        self.clear_items()
+        cat_color = self.category_data.get("color")
+        parent_color = self.editor_view.panel_data.get("color", EmbedBuilder.COLOR_PRIMARY)
+        active_color = cat_color if cat_color is not None else parent_color
+
+        def make_cb(col):
+            async def cb(i: discord.Interaction):
+                self.category_data["color"] = col
+                self.refresh_items()
+                await i.response.edit_message(embed=self.build_embed(), view=self)
+            return cb
+
+        for idx, (name, col_val) in enumerate(PRESET_COLORS[:6]):
+            is_active = (cat_color == col_val)
+            b = Button(
+                label=name,
+                style=discord.ButtonStyle.success if is_active else discord.ButtonStyle.secondary,
+                row=0 if idx < 3 else 1
+            )
+            b.callback = make_cb(col_val)
+            self.add_item(b)
+
+        b_same = Button(
+            label="🔄 نفس لون اللوحة الأساسية",
+            style=discord.ButtonStyle.primary if cat_color is None else discord.ButtonStyle.secondary,
+            row=2
+        )
+        async def same_cb(i: discord.Interaction):
+            self.category_data["color"] = None
+            self.refresh_items()
+            await i.response.edit_message(embed=self.build_embed(), view=self)
+        b_same.callback = same_cb
+        self.add_item(b_same)
+
+        b_custom = Button(label="✏️ كود Hex مخصص", style=discord.ButtonStyle.primary, emoji="✏️", row=2)
+        async def custom_cb(i: discord.Interaction):
+            await i.response.send_modal(CategoryCustomColorModal(self.category_data, self.editor_view))
+        b_custom.callback = custom_cb
+        self.add_item(b_custom)
+
+        b_back = Button(label="🔙 حفظ ورجوع للمحرّر", style=discord.ButtonStyle.primary, emoji="🔙", row=2)
+        async def back_cb(i: discord.Interaction):
+            self.editor_view.refresh_components()
+            embed = self.editor_view.build_editor_embed(i.guild)
+            await i.response.edit_message(embed=embed, view=self.editor_view)
+        b_back.callback = back_cb
+        self.add_item(b_back)
+
+    def build_embed(self) -> discord.Embed:
+        cat_color = self.category_data.get("color")
+        parent_color = self.editor_view.panel_data.get("color", EmbedBuilder.COLOR_PRIMARY)
+        active_color = cat_color if cat_color is not None else parent_color
+
+        status_text = f"`#{cat_color:06X}` (لون مخصص للقسم 🎨)" if cat_color is not None else f"`#{parent_color:06X}` (يتبع لون اللوحة الأساسية)"
+
+        embed = discord.Embed(
+            title=f"🎨 لون إيمبد تذاكر قسم: {self.category_data.get('emoji', '🎫')} {self.category_data.get('name')}",
+            description=(
+                f"تحكّم في لون الشريط الجانبي للإيمبد الترحيبي داخل قنوات التذاكر المفتوحة لهذا القسم:\n\n"
+                f"• **اللون المعتمد للقسم:** {status_text}\n\n"
+                f"📌 *اضغط على أحد الألوان لتطبيقه على هذا القسم، أو اختر 'نفس لون اللوحة الأساسية' لتوحيد اللون.*"
+            ),
+            color=active_color
+        )
+        return embed
+
+
 class CategoryEditModal(Modal):
     def __init__(self, category_data: Dict[str, Any]):
-        super().__init__(title=f"⚙️ تعديل قسم: {category_data.get('name', '')}")
+        super().__init__(title=f"⚙️ تعديل بيانات قسم: {category_data.get('name', '')[:20]}")
         self.category_data = category_data
 
         self.name_input = TextInput(
-            label="اسم نوع التذكرة",
+            label="اسم نوع التذكرة / القسم",
             default=category_data.get("name", ""),
             required=True,
             max_length=50
         )
         self.desc_input = TextInput(
-            label="الوصف المختصر",
+            label="الوصف المختصر للقسم",
             default=category_data.get("description", ""),
             required=True,
-            max_length=100
+            max_length=150
         )
         self.emoji_input = TextInput(
             label="الإيموجي",
@@ -862,7 +1174,429 @@ class CategoryEditModal(Modal):
         except ValueError:
             self.category_data["points"] = 5
 
-        await interaction.response.send_message(f"✅ **تم تحديث بيانات القسم `{self.category_data['name']}`.**", ephemeral=True)
+        await interaction.response.send_message(
+            f"✅ **تم تحديث البيانات الأساسية لقسم `{self.category_data['name']}` بنجاح.**\n"
+            f"💡 *اضغط على زر 'حفظ وتحديث اللوحة الحية' في المحرّر لتطبيق التغييرات فوراً.*",
+            ephemeral=True
+        )
+
+
+class CategoryRolesEditView(View):
+    def __init__(self, editor_view: "InteractivePanelEditorView", category_data: Dict[str, Any]):
+        super().__init__(timeout=None)
+        self.editor_view = editor_view
+        self.category_data = category_data
+
+        role_select = RoleSelect(
+            placeholder="👥 اختر رتب الدعم المسؤولة عن هذا القسم...",
+            min_values=1,
+            max_values=10,
+            custom_id="cat_role_select"
+        )
+        role_select.callback = self.on_roles_selected
+        self.add_item(role_select)
+
+    async def on_roles_selected(self, interaction: discord.Interaction):
+        if not await check_perm_or_deny(interaction):
+            return
+
+        selected_role_ids = [int(val) for val in interaction.data["values"]]
+        self.category_data["support_role_ids"] = selected_role_ids
+        
+        embed = self.build_embed(interaction.guild)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="🔄 تفريغ الرتب (استخدام رتب السيرفر الافتراضية)", style=discord.ButtonStyle.secondary, emoji="🔄", row=1)
+    async def clear_roles(self, interaction: discord.Interaction, button: Button):
+        if not await check_perm_or_deny(interaction):
+            return
+        self.category_data["support_role_ids"] = []
+        embed = self.build_embed(interaction.guild)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="🔙 حفظ ورجوع لمحرّر اللوحة", style=discord.ButtonStyle.primary, emoji="🔙", row=1)
+    async def back_to_editor(self, interaction: discord.Interaction, button: Button):
+        if not await check_perm_or_deny(interaction):
+            return
+        self.editor_view.refresh_components()
+        embed = self.editor_view.build_editor_embed(interaction.guild)
+        await interaction.response.edit_message(embed=embed, view=self.editor_view)
+
+    def build_embed(self, guild: discord.Guild) -> discord.Embed:
+        role_ids = self.category_data.get("support_role_ids", [])
+        roles_text = " ".join([f"<@&{r}>" for r in role_ids]) if role_ids else "⚠️ لم تحدد رتب خاصة (تستخدم رتب السيرفر العامة)"
+        
+        embed = discord.Embed(
+            title=f"👥 ضبط رتب قسم: {self.category_data.get('emoji', '🎫')} {self.category_data.get('name')}",
+            description=(
+                f"اختر الرتب التي سيتم إسنادها وتنبيهها عند فتح تذكرة في هذا القسم.\n\n"
+                f"• **الرتب المحددة حالياً ({len(role_ids)}):**\n{roles_text}\n\n"
+                f"📌 *استخدم قائمة الرتب لاختيار رتب جديدة، أو زر التفريغ للاعتماد على رتب السيرفر الافتراضية.*"
+            ),
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+        return embed
+
+
+class CategoryPermissionsView(View):
+    def __init__(self, editor_view: "InteractivePanelEditorView", category_data: Dict[str, Any]):
+        super().__init__(timeout=None)
+        self.editor_view = editor_view
+        self.category_data = category_data
+        if "permissions" not in self.category_data or not isinstance(self.category_data["permissions"], dict):
+            self.category_data["permissions"] = {
+                "allow_attach_files": True,
+                "allow_embed_links": True,
+                "allow_history": True,
+                "private_to_category_roles": False
+            }
+        self.refresh_items()
+
+    def refresh_items(self):
+        self.clear_items()
+        
+        # Category Channel Select
+        cat_select = ChannelSelect(
+            placeholder="📁 اختر تصنيف ديسكورد (Discord Category)...",
+            channel_types=[discord.ChannelType.category],
+            min_values=1,
+            max_values=1,
+            custom_id="category_channel_select"
+        )
+        async def ch_cb(i: discord.Interaction):
+            self.category_data["category_id"] = int(i.data["values"][0])
+            self.refresh_items()
+            await i.response.edit_message(embed=self.build_embed(), view=self)
+        cat_select.callback = ch_cb
+        self.add_item(cat_select)
+
+        perms = self.category_data["permissions"]
+        
+        # Toggles
+        b_attach = Button(
+            label=f"📎 إرفاق ملفات: {'مسموح ✅' if perms.get('allow_attach_files', True) else 'ممنوع ❌'}",
+            style=discord.ButtonStyle.success if perms.get("allow_attach_files", True) else discord.ButtonStyle.secondary,
+            row=1
+        )
+        async def attach_cb(i: discord.Interaction):
+            perms["allow_attach_files"] = not perms.get("allow_attach_files", True)
+            self.refresh_items()
+            await i.response.edit_message(embed=self.build_embed(), view=self)
+        b_attach.callback = attach_cb
+        self.add_item(b_attach)
+
+        b_links = Button(
+            label=f"🔗 إرسال روابط: {'مسموح ✅' if perms.get('allow_embed_links', True) else 'ممنوع ❌'}",
+            style=discord.ButtonStyle.success if perms.get("allow_embed_links", True) else discord.ButtonStyle.secondary,
+            row=1
+        )
+        async def links_cb(i: discord.Interaction):
+            perms["allow_embed_links"] = not perms.get("allow_embed_links", True)
+            self.refresh_items()
+            await i.response.edit_message(embed=self.build_embed(), view=self)
+        b_links.callback = links_cb
+        self.add_item(b_links)
+
+        b_history = Button(
+            label=f"📜 قراءة السجل: {'مسموح ✅' if perms.get('allow_history', True) else 'ممنوع ❌'}",
+            style=discord.ButtonStyle.success if perms.get("allow_history", True) else discord.ButtonStyle.secondary,
+            row=1
+        )
+        async def history_cb(i: discord.Interaction):
+            perms["allow_history"] = not perms.get("allow_history", True)
+            self.refresh_items()
+            await i.response.edit_message(embed=self.build_embed(), view=self)
+        b_history.callback = history_cb
+        self.add_item(b_history)
+
+        b_private = Button(
+            label=f"🔐 خصوصية القسم: {'خاص برتب القسم 🔒' if perms.get('private_to_category_roles', False) else 'عام لإدارة الدعم 🌐'}",
+            style=discord.ButtonStyle.danger if perms.get("private_to_category_roles", False) else discord.ButtonStyle.secondary,
+            row=2
+        )
+        async def priv_cb(i: discord.Interaction):
+            perms["private_to_category_roles"] = not perms.get("private_to_category_roles", False)
+            self.refresh_items()
+            await i.response.edit_message(embed=self.build_embed(), view=self)
+        b_private.callback = priv_cb
+        self.add_item(b_private)
+
+        b_clear_cat = Button(label="📁 بدون تصنيف", style=discord.ButtonStyle.secondary, row=2)
+        async def clear_cat_cb(i: discord.Interaction):
+            self.category_data["category_id"] = None
+            self.refresh_items()
+            await i.response.edit_message(embed=self.build_embed(), view=self)
+        b_clear_cat.callback = clear_cat_cb
+        self.add_item(b_clear_cat)
+
+        b_back = Button(label="🔙 حفظ ورجوع للمحرّر", style=discord.ButtonStyle.primary, emoji="🔙", row=2)
+        async def back_cb(i: discord.Interaction):
+            self.editor_view.refresh_components()
+            embed = self.editor_view.build_editor_embed(i.guild)
+            await i.response.edit_message(embed=embed, view=self.editor_view)
+        b_back.callback = back_cb
+        self.add_item(b_back)
+
+    def build_embed(self) -> discord.Embed:
+        cat_ch = f"<#{self.category_data.get('category_id')}>" if self.category_data.get("category_id") else "بدون تصنيف (خارج التصنيفات)"
+        perms = self.category_data.get("permissions", {})
+        
+        embed = discord.Embed(
+            title=f"🔒 صلاحيات وتصنيف قسم: {self.category_data.get('emoji', '🎫')} {self.category_data.get('name')}",
+            description=(
+                f"تحكّم في تصنيف القنوات وأذونات الأعضاء داخل قنوات التذاكر لهذا القسم:\n\n"
+                f"• **التصنيف (Category Channel):** {cat_ch}\n"
+                f"• **إرفاق الصور والملفات:** `{'مسموح ✅' if perms.get('allow_attach_files', True) else 'ممنوع ❌'}`\n"
+                f"• **إرسال الروابط والمعاينات:** `{'مسموح ✅' if perms.get('allow_embed_links', True) else 'ممنوع ❌'}`\n"
+                f"• **قراءة تاريخ الرسائل:** `{'مسموح ✅' if perms.get('allow_history', True) else 'ممنوع ❌'}`\n"
+                f"• **الوصول والصلاحيات:** `{'خاص برتب القسم المحددة فقط 🔒' if perms.get('private_to_category_roles', False) else 'متاح لطاقم الدعم العام 🌐'}`\n\n"
+                f"💡 *اضغط على الأزرار لتغيير الصلاحيات فوراً، أو اختر تصنيفاً من القائمة.*"
+            ),
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+        return embed
+
+
+class CategorySurveyQuestionsModal(Modal):
+    def __init__(self, category_data: Dict[str, Any], editor_view: "InteractivePanelEditorView"):
+        super().__init__(title=f"📋 أسئلة استبيان: {category_data.get('name', '')[:25]}")
+        self.category_data = category_data
+        self.editor_view = editor_view
+
+        questions = category_data.get("questions") or []
+        q1_val = questions[0].get("label", "") if len(questions) > 0 else "السبب الرئيسي لفتح التذكرة"
+        q2_val = questions[1].get("label", "") if len(questions) > 1 else "تفاصيل وتوضيح الطلب / المشكلة"
+        q3_val = questions[2].get("label", "") if len(questions) > 2 else "أي معلومات إضافية أو ملاحظات (اختياري)"
+        q4_val = questions[3].get("label", "") if len(questions) > 3 else ""
+        q5_val = questions[4].get("label", "") if len(questions) > 4 else ""
+
+        self.q1_input = TextInput(
+            label="السؤال 1 (إلزامي)",
+            default=q1_val,
+            required=True,
+            max_length=100
+        )
+        self.q2_input = TextInput(
+            label="السؤال 2 (شرح تفصيلي)",
+            default=q2_val,
+            style=discord.TextStyle.paragraph,
+            required=False,
+            max_length=150
+        )
+        self.q3_input = TextInput(
+            label="السؤال 3 (اختياري)",
+            default=q3_val,
+            required=False,
+            max_length=100
+        )
+        self.q4_input = TextInput(
+            label="السؤال 4 (اختياري)",
+            default=q4_val,
+            required=False,
+            max_length=100
+        )
+        self.q5_input = TextInput(
+            label="السؤال 5 (اختياري)",
+            default=q5_val,
+            required=False,
+            max_length=100
+        )
+
+        self.add_item(self.q1_input)
+        self.add_item(self.q2_input)
+        self.add_item(self.q3_input)
+        self.add_item(self.q4_input)
+        self.add_item(self.q5_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if not await check_perm_or_deny(interaction):
+            return
+
+        new_questions = []
+        if self.q1_input.value.strip():
+            new_questions.append({"label": self.q1_input.value.strip(), "required": True, "style": "short"})
+        if self.q2_input.value.strip():
+            new_questions.append({"label": self.q2_input.value.strip(), "required": False, "style": "paragraph"})
+        if self.q3_input.value.strip():
+            new_questions.append({"label": self.q3_input.value.strip(), "required": False, "style": "short"})
+        if self.q4_input.value.strip():
+            new_questions.append({"label": self.q4_input.value.strip(), "required": False, "style": "short"})
+        if self.q5_input.value.strip():
+            new_questions.append({"label": self.q5_input.value.strip(), "required": False, "style": "short"})
+
+        self.category_data["questions"] = new_questions
+        self.category_data["survey_enabled"] = True
+
+        await interaction.response.send_message(
+            f"✅ **تم حفظ أسئلة الاستبيان لقسم `{self.category_data.get('name')}` بنجاح ({len(new_questions)} أسئلة).**\n"
+            f"💡 *اضغط على زر 'حفظ وتحديث اللوحة الحية' في المحرّر لتطبيق التغييرات.*",
+            ephemeral=True
+        )
+
+
+class CategorySurveyEditView(View):
+    def __init__(self, editor_view: "InteractivePanelEditorView", category_data: Dict[str, Any]):
+        super().__init__(timeout=None)
+        self.editor_view = editor_view
+        self.category_data = category_data
+        self.refresh_items()
+
+    def refresh_items(self):
+        self.clear_items()
+        is_enabled = self.category_data.get("survey_enabled", True)
+
+        b_toggle = Button(
+            label=f"🔘 الاستبيان: {'مفعل ✅' if is_enabled else 'معطل ❌'}",
+            style=discord.ButtonStyle.success if is_enabled else discord.ButtonStyle.danger,
+            row=0
+        )
+        async def toggle_cb(i: discord.Interaction):
+            self.category_data["survey_enabled"] = not is_enabled
+            self.refresh_items()
+            await i.response.edit_message(embed=self.build_embed(), view=self)
+        b_toggle.callback = toggle_cb
+        self.add_item(b_toggle)
+
+        b_questions = Button(label="✏️ تخصيص أسئلة الاستبيان", style=discord.ButtonStyle.primary, emoji="✏️", row=0)
+        async def q_cb(i: discord.Interaction):
+            await i.response.send_modal(CategorySurveyQuestionsModal(self.category_data, self.editor_view))
+        b_questions.callback = q_cb
+        self.add_item(b_questions)
+
+        b_reset = Button(label="🔄 استعادة الأسئلة الافتراضية", style=discord.ButtonStyle.secondary, emoji="🔄", row=1)
+        async def reset_cb(i: discord.Interaction):
+            self.category_data["questions"] = [
+                {"label": "السبب الرئيسي لفتح التذكرة", "required": True, "style": "short"},
+                {"label": "تفاصيل وتوضيح الطلب / المشكلة", "required": True, "style": "paragraph"},
+                {"label": "أي معلومات إضافية أو ملاحظات (اختياري)", "required": False, "style": "short"}
+            ]
+            self.category_data["survey_enabled"] = True
+            self.refresh_items()
+            await i.response.edit_message(embed=self.build_embed(), view=self)
+        b_reset.callback = reset_cb
+        self.add_item(b_reset)
+
+        b_back = Button(label="🔙 حفظ ورجوع للمحرّر", style=discord.ButtonStyle.primary, emoji="🔙", row=1)
+        async def back_cb(i: discord.Interaction):
+            self.editor_view.refresh_components()
+            embed = self.editor_view.build_editor_embed(i.guild)
+            await i.response.edit_message(embed=embed, view=self.editor_view)
+        b_back.callback = back_cb
+        self.add_item(b_back)
+
+    def build_embed(self) -> discord.Embed:
+        is_enabled = self.category_data.get("survey_enabled", True)
+        questions = self.category_data.get("questions") or [
+            {"label": "السبب الرئيسي لفتح التذكرة"},
+            {"label": "تفاصيل وتوضيح الطلب / المشكلة"},
+            {"label": "أي معلومات إضافية أو ملاحظات (اختياري)"}
+        ]
+        
+        q_lines = [f"`{idx+1}.` {q.get('label', '')}" for idx, q in enumerate(questions)]
+        q_text = "\n".join(q_lines) if q_lines else "لا توجد أسئلة مخصصة"
+
+        embed = discord.Embed(
+            title=f"📋 استبيان وأسئلة قسم: {self.category_data.get('emoji', '🎫')} {self.category_data.get('name')}",
+            description=(
+                f"تحكّم في النموذج والاستبيان الذي يظهر للعضو عند فتح تذكرة في هذا القسم:\n\n"
+                f"• **حالة الاستبيان:** `{'مفعل ✅ (يطلب ملء النموذج قبل فتح القناة)' if is_enabled else 'معطل ❌ (تفتح القناة مباشرة فور الاختيار)'}`\n\n"
+                f"📝 **الأسئلة الحالية ({len(questions)}):**\n{q_text}\n\n"
+                f"💡 *اضغط على 'تخصيص أسئلة الاستبيان' لإدخال أسئلتك الخاصة، أو زر التبديل لتفعيل/تعطيل الاستبيان.*"
+            ),
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+        return embed
+
+
+class CategoryPrioritySelectView(View):
+    def __init__(self, editor_view: "InteractivePanelEditorView", category_data: Dict[str, Any]):
+        super().__init__(timeout=None)
+        self.editor_view = editor_view
+        self.category_data = category_data
+
+        curr = category_data.get("priority", "متوسطة")
+        
+        b_low = Button(
+            label="🟢 منخفضة (Low)",
+            style=discord.ButtonStyle.success if curr in ["منخفضة", "Low"] else discord.ButtonStyle.secondary,
+            row=0
+        )
+        async def low_cb(i: discord.Interaction):
+            self.category_data["priority"] = "منخفضة"
+            await self.update(i)
+        b_low.callback = low_cb
+        self.add_item(b_low)
+
+        b_med = Button(
+            label="🟡 متوسطة (Medium)",
+            style=discord.ButtonStyle.primary if curr in ["متوسطة", "Medium"] else discord.ButtonStyle.secondary,
+            row=0
+        )
+        async def med_cb(i: discord.Interaction):
+            self.category_data["priority"] = "متوسطة"
+            await self.update(i)
+        b_med.callback = med_cb
+        self.add_item(b_med)
+
+        b_high = Button(
+            label="🟠 عالية (High)",
+            style=discord.ButtonStyle.primary if curr in ["عالية", "High"] else discord.ButtonStyle.secondary,
+            row=0
+        )
+        async def high_cb(i: discord.Interaction):
+            self.category_data["priority"] = "عالية"
+            await self.update(i)
+        b_high.callback = high_cb
+        self.add_item(b_high)
+
+        b_urg = Button(
+            label="🔴 طارئة وحرجة (Urgent)",
+            style=discord.ButtonStyle.danger if curr in ["طارئة", "Urgent"] else discord.ButtonStyle.secondary,
+            row=0
+        )
+        async def urg_cb(i: discord.Interaction):
+            self.category_data["priority"] = "طارئة"
+            await self.update(i)
+        b_urg.callback = urg_cb
+        self.add_item(b_urg)
+
+        b_back = Button(label="🔙 حفظ ورجوع لمحرّر اللوحة", style=discord.ButtonStyle.primary, emoji="🔙", row=1)
+        async def back_cb(i: discord.Interaction):
+            self.editor_view.refresh_components()
+            embed = self.editor_view.build_editor_embed(i.guild)
+            await i.response.edit_message(embed=embed, view=self.editor_view)
+        b_back.callback = back_cb
+        self.add_item(b_back)
+
+    async def update(self, i: discord.Interaction):
+        embed = self.build_embed()
+        v = CategoryPrioritySelectView(self.editor_view, self.category_data)
+        await i.response.edit_message(embed=embed, view=v)
+
+    def build_embed(self) -> discord.Embed:
+        curr = self.category_data.get("priority", "متوسطة")
+        priority_badges = {
+            "منخفضة": "🟢 منخفضة (Low)",
+            "متوسطة": "🟡 متوسطة (Medium)",
+            "عالية": "🟠 عالية (High)",
+            "طارئة": "🔴 طارئة وحرجة (Urgent)",
+            "Low": "🟢 منخفضة (Low)",
+            "Medium": "🟡 متوسطة (Medium)",
+            "High": "🟠 عالية (High)",
+            "Urgent": "🔴 طارئة وحرجة (Urgent)"
+        }
+        badge = priority_badges.get(curr, f"🟡 {curr}")
+        embed = discord.Embed(
+            title=f"⚡ مدى أهمية وأولوية قسم: {self.category_data.get('emoji', '🎫')} {self.category_data.get('name')}",
+            description=(
+                f"حدّد مستوى أولوية وأهمية هذا القسم.\n"
+                f"سيتم عرض هذا المستوى تلقائياً في بيانات التذكرة، إشعار فريق الدعم، وشاشات الإدارة.\n\n"
+                f"• **المستوى المحدد حالياً:** `{badge}`\n\n"
+                f"📌 *اضغط على أحد الأزرار لتغيير الأولوية فوراً ثم العودة للمحرّر.*"
+            ),
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+        return embed
 
 
 class InteractivePanelEditorView(View):
@@ -877,18 +1611,34 @@ class InteractivePanelEditorView(View):
         self.clear_items()
 
         categories = self.panel_data.get("categories", [])
+        if self.selected_cat_index >= len(categories) and categories:
+            self.selected_cat_index = len(categories) - 1
 
-        # Category Select Dropdown
+        priority_badges = {
+            "منخفضة": "🟢 منخفضة",
+            "متوسطة": "🟡 متوسطة",
+            "عالية": "🟠 عالية",
+            "طارئة": "🔴 طارئة",
+            "Low": "🟢 Low",
+            "Medium": "🟡 Medium",
+            "High": "🟠 High",
+            "Urgent": "🔴 Urgent"
+        }
+
+        # Category Select Dropdown (Row 0)
         if categories:
-            options = [
-                discord.SelectOption(
+            options = []
+            for idx, c in enumerate(categories):
+                p_val = c.get("priority", "متوسطة")
+                p_text = priority_badges.get(p_val, p_val)
+                options.append(discord.SelectOption(
                     label=f"{idx+1}. {c.get('emoji', '🎫')} {c.get('name', 'قسم')}",
                     value=str(idx),
-                    description=c.get("description", "")[:50],
+                    description=f"[{p_text}] {c.get('description', '')}"[:100],
                     default=(idx == self.selected_cat_index)
-                ) for idx, c in enumerate(categories)
-            ]
-            cat_select = Select(placeholder="🔍 اختر قسم التذكرة للتحكم والتعديل...", options=options, min_values=1, max_values=1, custom_id="editor_cat_select")
+                ))
+
+            cat_select = Select(placeholder="🔍 اختر قسم التذكرة للتحكم والتعديل...", options=options, min_values=1, max_values=1, custom_id="editor_cat_select", row=0)
             
             async def cat_sel_cb(i: discord.Interaction):
                 self.selected_cat_index = int(i.data["values"][0])
@@ -899,23 +1649,47 @@ class InteractivePanelEditorView(View):
             cat_select.callback = cat_sel_cb
             self.add_item(cat_select)
 
-        # Action Buttons Row 1
-        b_info = Button(label="📝 تعديل اللوحة", style=discord.ButtonStyle.primary, emoji="📝", row=1)
+        # Row 1: Panel Level Controls
+        b_info = Button(label="📝 هوية اللوحة", style=discord.ButtonStyle.primary, emoji="📝", row=1)
         async def info_cb(i: discord.Interaction):
             await i.response.send_modal(PanelEditInfoModal(self.panel_data))
         b_info.callback = info_cb
         self.add_item(b_info)
 
-        b_add_cat = Button(label="➕ إضافة قسم جديد", style=discord.ButtonStyle.success, emoji="➕", row=1)
+        b_color = Button(label="🎨 لون اللوحة", style=discord.ButtonStyle.secondary, emoji="🎨", row=1)
+        async def color_cb(i: discord.Interaction):
+            v = PanelColorPickerView(self, self.panel_data)
+            await i.response.edit_message(embed=v.build_embed(), view=v)
+        b_color.callback = color_cb
+        self.add_item(b_color)
+
+        b_channel = Button(label="📌 قناة النشر", style=discord.ButtonStyle.secondary, emoji="📌", row=1)
+        async def ch_cb(i: discord.Interaction):
+            v = PanelTargetChannelView(self, self.panel_data)
+            await i.response.edit_message(embed=v.build_embed(i.guild), view=v)
+        b_channel.callback = ch_cb
+        self.add_item(b_channel)
+
+        b_add_cat = Button(label="➕ قسم جديد", style=discord.ButtonStyle.success, emoji="➕", row=1)
         async def add_cat_cb(i: discord.Interaction):
             new_cat = {
                 "id": f"cat_{len(self.panel_data['categories']) + 1}",
                 "name": f"قسم جديد {len(self.panel_data['categories']) + 1}",
-                "description": "وصف القسم الجديد",
+                "description": "انقر هنا لفتح تذكرة جديدة",
                 "emoji": "🎫",
-                "welcome_msg": "مرحباً {user}! يرجى توضيح استفسارك.",
+                "welcome_msg": "مرحباً {user}! شرفتنا في قسم {category}.",
+                "priority": "متوسطة",
+                "survey_enabled": True,
+                "color": None,
+                "points": 5,
                 "max_tickets": 1,
-                "enabled": True
+                "enabled": True,
+                "permissions": {
+                    "allow_attach_files": True,
+                    "allow_embed_links": True,
+                    "allow_history": True,
+                    "private_to_category_roles": False
+                }
             }
             self.panel_data["categories"].append(new_cat)
             self.selected_cat_index = len(self.panel_data["categories"]) - 1
@@ -923,7 +1697,7 @@ class InteractivePanelEditorView(View):
         b_add_cat.callback = add_cat_cb
         self.add_item(b_add_cat)
 
-        b_preview = Button(label="👁️ معاينة حية (Live Preview)", style=discord.ButtonStyle.secondary, emoji="👁️", row=1)
+        b_preview = Button(label="👁️ معاينة حية", style=discord.ButtonStyle.secondary, emoji="👁️", row=1)
         async def preview_cb(i: discord.Interaction):
             embed = EmbedBuilder.panel_embed(
                 title=self.panel_data["title"],
@@ -938,16 +1712,53 @@ class InteractivePanelEditorView(View):
         b_preview.callback = preview_cb
         self.add_item(b_preview)
 
-        if categories:
-            # Reorder & Edit Category Row 2
-            b_edit_cat = Button(label="⚙️ تعديل القسم المختار", style=discord.ButtonStyle.secondary, emoji="⚙️", row=2)
+        # Row 2: Category Detailed Configuration (User Request!)
+        if categories and self.selected_cat_index < len(categories):
+            cur_cat = categories[self.selected_cat_index]
+
+            b_edit_cat = Button(label="⚙️ الاسم والوصف", style=discord.ButtonStyle.secondary, emoji="⚙️", row=2)
             async def edit_cat_cb(i: discord.Interaction):
-                if self.selected_cat_index < len(self.panel_data["categories"]):
-                    await i.response.send_modal(CategoryEditModal(self.panel_data["categories"][self.selected_cat_index]))
+                await i.response.send_modal(CategoryEditModal(cur_cat))
             b_edit_cat.callback = edit_cat_cb
             self.add_item(b_edit_cat)
 
-            b_up = Button(label="⬆️ أعلى", style=discord.ButtonStyle.secondary, emoji="⬆️", row=2)
+            b_cat_color = Button(label="🎨 لون القسم", style=discord.ButtonStyle.secondary, emoji="🎨", row=2)
+            async def cat_col_cb(i: discord.Interaction):
+                v = CategoryColorPickerView(self, cur_cat)
+                await i.response.edit_message(embed=v.build_embed(), view=v)
+            b_cat_color.callback = cat_col_cb
+            self.add_item(b_cat_color)
+
+            b_roles = Button(label="👥 رتب القسم", style=discord.ButtonStyle.secondary, emoji="👥", row=2)
+            async def roles_cb(i: discord.Interaction):
+                v = CategoryRolesEditView(self, cur_cat)
+                await i.response.edit_message(embed=v.build_embed(i.guild), view=v)
+            b_roles.callback = roles_cb
+            self.add_item(b_roles)
+
+            b_perms = Button(label="🔒 صلاحيات وتصنيف", style=discord.ButtonStyle.secondary, emoji="🔒", row=2)
+            async def perms_cb(i: discord.Interaction):
+                v = CategoryPermissionsView(self, cur_cat)
+                await i.response.edit_message(embed=v.build_embed(), view=v)
+            b_perms.callback = perms_cb
+            self.add_item(b_perms)
+
+            b_survey = Button(label="📋 الاستبيان والأسئلة", style=discord.ButtonStyle.secondary, emoji="📋", row=2)
+            async def survey_cb(i: discord.Interaction):
+                v = CategorySurveyEditView(self, cur_cat)
+                await i.response.edit_message(embed=v.build_embed(), view=v)
+            b_survey.callback = survey_cb
+            self.add_item(b_survey)
+
+            b_priority = Button(label="⚡ أهمية القسم", style=discord.ButtonStyle.secondary, emoji="⚡", row=2)
+            async def priority_cb(i: discord.Interaction):
+                v = CategoryPrioritySelectView(self, cur_cat)
+                await i.response.edit_message(embed=v.build_embed(), view=v)
+            b_priority.callback = priority_cb
+            self.add_item(b_priority)
+
+            # Row 3: Category Reordering & Actions
+            b_up = Button(label="⬆️ أعلى", style=discord.ButtonStyle.secondary, emoji="⬆️", row=3)
             async def up_cb(i: discord.Interaction):
                 idx = self.selected_cat_index
                 if idx > 0:
@@ -962,7 +1773,7 @@ class InteractivePanelEditorView(View):
             b_up.callback = up_cb
             self.add_item(b_up)
 
-            b_down = Button(label="⬇️ أسفل", style=discord.ButtonStyle.secondary, emoji="⬇️", row=2)
+            b_down = Button(label="⬇️ أسفل", style=discord.ButtonStyle.secondary, emoji="⬇️", row=3)
             async def down_cb(i: discord.Interaction):
                 idx = self.selected_cat_index
                 cats = self.panel_data["categories"]
@@ -977,7 +1788,7 @@ class InteractivePanelEditorView(View):
             b_down.callback = down_cb
             self.add_item(b_down)
 
-            b_dup = Button(label="📋 نسخ", style=discord.ButtonStyle.secondary, emoji="📋", row=2)
+            b_dup = Button(label="📋 نسخ", style=discord.ButtonStyle.secondary, emoji="📋", row=3)
             async def dup_cb(i: discord.Interaction):
                 idx = self.selected_cat_index
                 if idx < len(self.panel_data["categories"]):
@@ -992,7 +1803,7 @@ class InteractivePanelEditorView(View):
             b_dup.callback = dup_cb
             self.add_item(b_dup)
 
-            b_del = Button(label="🗑️ حذف القسم", style=discord.ButtonStyle.danger, emoji="🗑️", row=2)
+            b_del = Button(label="🗑️ حذف", style=discord.ButtonStyle.danger, emoji="🗑️", row=3)
             async def del_cb(i: discord.Interaction):
                 idx = self.selected_cat_index
                 if idx < len(self.panel_data["categories"]):
@@ -1004,9 +1815,10 @@ class InteractivePanelEditorView(View):
             b_del.callback = del_cb
             self.add_item(b_del)
 
-        # Row 3: Save & Update Live Panel
-        b_save = Button(label="💾 حفظ وتحديث اللوحة الحية (Save & Update)", style=discord.ButtonStyle.success, emoji="💾", row=3)
+        # Row 4: Save & Apply Live Updates
+        b_save = Button(label="💾 حفظ وتحديث اللوحة الحية (Save & Live Sync)", style=discord.ButtonStyle.success, emoji="💾", row=4)
         async def save_cb(i: discord.Interaction):
+            await i.response.defer(ephemeral=True)
             p_id = db.save_panel(
                 panel_id=self.panel_data.get("id"),
                 title=self.panel_data["title"],
@@ -1017,30 +1829,55 @@ class InteractivePanelEditorView(View):
                 message_id=self.panel_data.get("message_id"),
                 image_url=self.panel_data.get("image_url")
             )
+            self.panel_data["id"] = p_id
 
-            # Update live message if channel and message_id exist
+            # Update live message in Discord
             ch_id = self.panel_data.get("channel_id")
             msg_id = self.panel_data.get("message_id")
-            if ch_id and msg_id and i.guild:
+            updated_live = False
+            msg_jump = ""
+
+            if ch_id and i.guild:
                 ch = i.guild.get_channel(ch_id)
                 if ch:
-                    try:
-                        msg = await ch.fetch_message(msg_id)
-                        p_embed = EmbedBuilder.panel_embed(
-                            title=self.panel_data["title"],
-                            description=self.panel_data["description"],
-                            color=self.panel_data.get("color", EmbedBuilder.COLOR_PRIMARY),
-                            guild=i.guild,
-                            image_url=self.panel_data.get("image_url"),
-                            categories=self.panel_data.get("categories", [])
-                        )
-                        p_view = PanelView(categories=self.panel_data.get("categories", []), panel_id=p_id)
-                        await msg.edit(embed=p_embed, view=p_view)
-                    except Exception:
-                        pass
+                    p_embed = EmbedBuilder.panel_embed(
+                        title=self.panel_data["title"],
+                        description=self.panel_data["description"],
+                        color=self.panel_data.get("color", EmbedBuilder.COLOR_PRIMARY),
+                        guild=i.guild,
+                        image_url=self.panel_data.get("image_url"),
+                        categories=self.panel_data.get("categories", [])
+                    )
+                    p_view = PanelView(categories=self.panel_data.get("categories", []), panel_id=p_id)
+
+                    if msg_id:
+                        try:
+                            msg = await ch.fetch_message(msg_id)
+                            await msg.edit(embed=p_embed, view=p_view)
+                            updated_live = True
+                            msg_jump = msg.jump_url
+                        except Exception:
+                            pass
+
+                    # If not updated via existing message, post fresh
+                    if not updated_live:
+                        try:
+                            new_msg = await ch.send(embed=p_embed, view=p_view)
+                            db.update_panel_message_id(p_id, new_msg.id)
+                            self.panel_data["message_id"] = new_msg.id
+                            updated_live = True
+                            msg_jump = new_msg.jump_url
+                        except Exception:
+                            pass
 
             db.log_settings_change(i.guild_id, i.user.id, "EDIT_PANEL", f"Updated Panel #{p_id} ({self.panel_data['title']})")
-            await i.response.send_message(f"✅ **تم حفظ الإعدادات وتحديث رسالة اللوحة الحية في ديسكورد بنجاح!**", ephemeral=True)
+            
+            live_note = f"\n• 🔗 **رابط الرسالة المحدثة:** [اضغط هنا للانتقال للوحة]({msg_jump})" if msg_jump else ""
+            await i.followup.send(
+                f"✅ **تم حفظ جميع تعديلات اللوحة #{p_id} وتحديث اللوحة الحية في السيرفر بنجاح!**"
+                f"{live_note}",
+                ephemeral=True
+            )
 
         b_save.callback = save_cb
         self.add_item(b_save)
@@ -1048,36 +1885,84 @@ class InteractivePanelEditorView(View):
     def build_editor_embed(self, guild: discord.Guild) -> discord.Embed:
         p = self.panel_data
         cats = p.get("categories", [])
+        ch_str = f"<#{p.get('channel_id')}>" if p.get("channel_id") else "غير محددة"
 
         embed = discord.Embed(
-            title=f"🎛️ محرّر اللوحة التفاعلي #{p.get('id', 'جديدة')}",
+            title=f"🎛️ محرّر لوحة التذاكر الشامل #{p.get('id', 'جديدة')}",
             description=(
-                f"**عنوان اللوحة:** {p.get('title')}\n"
-                f"**الوصف:** {p.get('description')}\n"
-                f"**اللون:** `#{p.get('color', 5793266):06X}`\n"
-                f"**الصورة:** {p.get('image_url') or 'لا يوجد'}\n"
-                f"**عدد الأقسام:** `{len(cats)}`"
+                f"• **عنوان اللوحة:** {p.get('title')}\n"
+                f"• **الوصف العام:** {p.get('description')}\n"
+                f"• **قناة النشر الحالية:** {ch_str}\n"
+                f"• **اللون Hex:** `#{p.get('color', 5793266):06X}`\n"
+                f"• **إجمالي الأقسام:** `{len(cats)}` قسم"
             ),
             color=p.get("color", EmbedBuilder.COLOR_PRIMARY)
         )
 
-        for idx, c in enumerate(cats):
-            is_sel = "👈 (مختار)" if idx == self.selected_cat_index else ""
-            roles_str = " ".join([f"<@&{r}>" for r in c.get("support_role_ids", [])]) if c.get("support_role_ids") else "الافتراضية"
+        priority_badges = {
+            "منخفضة": "🟢 منخفضة (Low)",
+            "متوسطة": "🟡 متوسطة (Medium)",
+            "عالية": "🟠 عالية (High)",
+            "طارئة": "🔴 طارئة وحرجة (Urgent)",
+            "Low": "🟢 منخفضة (Low)",
+            "Medium": "🟡 متوسطة (Medium)",
+            "High": "🟠 عالية (High)",
+            "Urgent": "🔴 طارئة وحرجة (Urgent)"
+        }
+
+        # Show detailed breakdown of currently selected category
+        if cats and self.selected_cat_index < len(cats):
+            c = cats[self.selected_cat_index]
+            roles_str = " ".join([f"<@&{r}>" for r in c.get("support_role_ids", [])]) if c.get("support_role_ids") else "الرتب العامة للسيرفر"
             cat_ch = f"<#{c.get('category_id')}>" if c.get("category_id") else "بدون تصنيف"
+            p_val = c.get("priority", "متوسطة")
+            p_badge = priority_badges.get(p_val, f"🟡 {p_val}")
+
+            survey_status = "مفعل ✅" if c.get("survey_enabled", True) else "معطل ❌ (تفتح القناة مباشرة)"
+            q_count = len(c.get("questions") or []) if c.get("survey_enabled", True) else 0
+
+            perms = c.get("permissions") or {}
+            perm_desc = (
+                f"ملفات: {'✅' if perms.get('allow_attach_files', True) else '❌'} | "
+                f"روابط: {'✅' if perms.get('allow_embed_links', True) else '❌'} | "
+                f"سجل: {'✅' if perms.get('allow_history', True) else '❌'} | "
+                f"الوصول: {'خاص برتب القسم 🔒' if perms.get('private_to_category_roles', False) else 'عام للإدارة 🌐'}"
+            )
+
+            cat_col = c.get("color")
+            cat_col_str = f"`#{cat_col:06X}` (مخصص للقسم 🎨)" if cat_col is not None else f"`#{p.get('color', 5793266):06X}` (يتبع اللوحة الأساسية)"
 
             embed.add_field(
-                name=f"{c.get('emoji', '🎫')} {idx+1}. {c.get('name')} {is_sel}",
+                name=f"👉 تفاصيل القسم المحدد حالياً: {c.get('emoji', '🎫')} {c.get('name')} (قسم {self.selected_cat_index+1} من {len(cats)})",
                 value=(
-                    f"• **الوصف:** {c.get('description')}\n"
-                    f"• **التصنيف:** {cat_ch}\n"
-                    f"• **الرتب المسؤولة:** {roles_str}\n"
-                    f"• **النقاط:** `{c.get('points', 5)}` نقطة\n"
-                    f"• **حد التذاكر:** `{c.get('max_tickets', 1)}`"
+                    f"• 📝 **الوصف:** {c.get('description')}\n"
+                    f"• 🎨 **لون إيمبد القسم:** {cat_col_str}\n"
+                    f"• ⚡ **مدى أهمية القسم والأولوية:** `{p_badge}`\n"
+                    f"• 👥 **رتب الدعم المسؤولة:** {roles_str}\n"
+                    f"• 📁 **تصنيف القنوات:** {cat_ch}\n"
+                    f"• 🔒 **صلاحيات القسم:** {perm_desc}\n"
+                    f"• 📋 **الاستبيان والأسئلة:** {survey_status} • `{q_count}` أسئلة\n"
+                    f"• 🏆 **نقاط التذكرة:** `{c.get('points', 5)}` نقطة\n"
+                    f"• 💬 **رسالة الترحيب:** {c.get('welcome_msg', 'افتراضية')[:70]}..."
                 ),
                 inline=False
             )
 
+        # Overview list of all categories
+        if cats:
+            summary_lines = []
+            for idx, c in enumerate(cats):
+                is_sel = "👈" if idx == self.selected_cat_index else ""
+                p_val = c.get("priority", "متوسطة")
+                p_badge = priority_badges.get(p_val, p_val).split()[0]
+                summary_lines.append(f"{idx+1}. {c.get('emoji', '🎫')} **{c.get('name')}** [{p_badge}] {is_sel}")
+            embed.add_field(
+                name="📂 قائمة أقسام اللوحة:",
+                value="\n".join(summary_lines),
+                inline=False
+            )
+
+        embed.set_footer(text="استخدم القائمة المنسدلة لاختيار القسم، والأزرار أدناه لتعديل الصلاحيات والرتب والاستبيان والأولوية.")
         return embed
 
 

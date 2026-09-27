@@ -114,5 +114,38 @@ class StatsCog(commands.Cog):
             db.delete_all_ratings()
             await interaction.response.send_message("✅ تم مسح جميع التقييمات في النظام بنجاح.")
 
+    @app_commands.command(name="leaderboard", description="عرض لوحة شرف وصدارة طاقم الدعم الفني والنقاط (Staff Leaderboard)")
+    async def leaderboard(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return await interaction.response.send_message("❌ يرجى استخدام هذا الأمر داخل السيرفر.", ephemeral=True)
+
+        leaders = db.get_staff_leaderboard(interaction.guild_id, limit=10)
+        if not leaders:
+            return await interaction.response.send_message("📊 لا توجد إحصائيات أو نقاط مسجلة لطاقم الدعم في هذا السيرفر بعد.", ephemeral=True)
+
+        embed = discord.Embed(
+            title="🏆 لوحة شرف وصدارة طاقم الدعم الفني (Staff Leaderboard)",
+            description=f"أفضل موظفي الدعم الفني في سيرفر **{interaction.guild.name}** حسب سرعة الإنجاز، النقاط، وتقييم النجوم:\n",
+            color=0xFEE75C
+        )
+
+        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+        lines = []
+        for idx, row in enumerate(leaders):
+            badge = medals[idx] if idx < len(medals) else f"`#{idx+1}`"
+            u_mention = f"<@{row['user_id']}>"
+            pts = row.get("points", 0)
+            tkts = row.get("tickets_handled", 0)
+            stars = row.get("avg_stars", 0.0)
+            star_str = f"{stars} ⭐" if stars > 0 else "بدون تقييم"
+            lines.append(f"{badge} {u_mention} — **{pts}** نقطة | `{tkts}` تذكرة منجزة | {star_str}")
+
+        embed.add_field(name="قائمة المتصدرين:", value="\n\n".join(lines), inline=False)
+        embed.set_footer(text="نظام تذاكر ديسكورد المتقدم • تحديث فوري للنقاط والتقييم")
+        if interaction.guild.icon:
+            embed.set_thumbnail(url=interaction.guild.icon.url)
+
+        await interaction.response.send_message(embed=embed)
+
 async def setup(bot: commands.Bot):
     await bot.add_cog(StatsCog(bot))

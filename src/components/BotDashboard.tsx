@@ -115,16 +115,16 @@ export function BotDashboard({
   };
 
   const commandList = [
-    { name: "/control_panel", desc: isAr ? "لوحة التحكم الرئيسية التفاعلية الكاملة للمالك والإدارة" : "Full master interactive control panel" },
-    { name: "/setup_panel", desc: isAr ? "نشر وتعديل لوحة التذاكر بإمبد أزارا ودروب داون" : "Post custom ticket panel embed with dropdown" },
-    { name: "/setup", desc: isAr ? "معالج الإعداد الشامل خطوة بخطوة للوحات والتذاكر" : "Comprehensive step-by-step setup wizard" },
-    { name: "/create", desc: isAr ? "إنشاء لوحة تذاكر تفاعلية جديدة بخصائصها" : "Create new interactive ticket panel" },
-    { name: "/edit", desc: isAr ? "تعديل أقسام أو ألوان أو نصوص أي لوحة موجودة" : "Edit existing ticket panel details" },
-    { name: "/dashboard", desc: isAr ? "فتح لوحة الإعدادات والتخصيص المباشرة" : "Open in-app settings dashboard" },
+    { name: "/control_panel", desc: isAr ? "لوحة التحكم الرئيسية التفاعلية الكاملة للمالك والإدارة مع تعديل اللوحات" : "Full master interactive control panel with panel editor" },
+    { name: "/panel edit", desc: isAr ? "محرّر تفاعلي شامل لتعديل ألوان الإيمبد، الأقسام، الرتب، الصلاحيات، والاستبيان" : "Comprehensive interactive editor for embed colors, categories, roles & surveys" },
+    { name: "/panel create", desc: isAr ? "معالج خطوة بخطوة لإنشاء وتصميم لوحة تذاكر جديدة بأقسام مخصصة" : "Step-by-step wizard to create and design custom ticket panels" },
+    { name: "/panel list", desc: isAr ? "عرض جميع اللوحات المنشأة بالسيرفر واختيار أي لوحة لتعديلها فوراً" : "List all server panels and select any panel to edit immediately" },
+    { name: "/setup", desc: isAr ? "مركز الإعدادات والتخصيص الشامل للبوت بدون موقع خارجي" : "In-app setup dashboard for bot configuration without external site" },
+    { name: "/settings export", desc: isAr ? "تصدير جميع لوحات وإعدادات التذاكر إلى ملف JSON للنسخ الاحتياطي" : "Export all ticket panels & settings to JSON backup" },
+    { name: "/settings import", desc: isAr ? "استيراد لوحات وإعدادات التذاكر فوراً من ملف أو كود JSON" : "Import ticket panels & settings instantly from JSON" },
     { name: "/close", desc: isAr ? "إغلاق التذكرة الحالية وتنزيل السجل" : "Close active ticket and save transcript" },
     { name: "/claim", desc: isAr ? "استلام التذكرة من قبل عضو طاقم الدعم" : "Claim ticket for support staff" },
-    { name: "/transcript", desc: isAr ? "تصدير محادثة التذكرة إلى ملف HTML احترافي" : "Export ticket conversation as HTML" },
-    { name: "/blacklist_add", desc: isAr ? "حظر عضو من فتح التذاكر بالسيرفر" : "Blacklist user from opening tickets" }
+    { name: "/transcript", desc: isAr ? "تصدير محادثة التذكرة إلى ملف HTML احترافي" : "Export ticket conversation as HTML" }
   ];
 
   return (

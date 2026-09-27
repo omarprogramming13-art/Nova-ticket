@@ -13,6 +13,7 @@ from bot.views.setup_wizard_views import (
     PanelBasicInfoModal,
     InAppSettingsDashboardView,
     InteractivePanelEditorView,
+    SelectPanelToEditView,
     DeploymentSummaryView,
     ImportJsonModal,
     build_in_app_settings_embed,
@@ -38,10 +39,17 @@ class PanelGroup(app_commands.Group):
         await interaction.response.send_modal(PanelBasicInfoModal(session))
 
     @app_commands.command(name="edit", description="تعديل تفاعلي شامل للوحة قائمة بكل تفاصيلها وأقسامها")
-    @app_commands.describe(panel_id="معرف اللوحة المراد تعديلها (Panel ID)")
-    async def panel_edit(self, interaction: discord.Interaction, panel_id: int):
+    @app_commands.describe(panel_id="معرف اللوحة المراد تعديلها (اختياري - ستظهر قائمة باللوحات إذا لم يحدد)")
+    async def panel_edit(self, interaction: discord.Interaction, panel_id: Optional[int] = None):
         if not await check_perm_or_deny(interaction):
             return
+
+        if panel_id is None:
+            panels = db.get_panels() or []
+            if not panels:
+                return await interaction.response.send_message("❌ لا توجد لوحات تذاكر منشأة حالياً في هذا السيرفر. يمكنك إنشاء لوحة جديدة عبر `/panel create`.", ephemeral=True)
+            v = SelectPanelToEditView(self.bot, panels)
+            return await interaction.response.send_message("🎯 **اختر اللوحة المراد تعديلها بالكامل من القائمة المنسدلة:**", view=v, ephemeral=True)
 
         panel = db.get_panel_by_id(panel_id)
         if not panel:
@@ -107,7 +115,8 @@ class PanelGroup(app_commands.Group):
                 inline=False
             )
 
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        v = SelectPanelToEditView(self.bot, panels)
+        await interaction.response.send_message(embed=embed, view=v, ephemeral=True)
 
     @app_commands.command(name="delete", description="حذف لوحة تذاكر معينة بواسطة المعرف (ID)")
     @app_commands.describe(panel_id="معرف اللوحة (Panel ID)")

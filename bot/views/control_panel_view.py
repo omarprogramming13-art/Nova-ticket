@@ -218,8 +218,8 @@ class BlacklistModal(Modal):
 
 
 class SettingsModal(Modal):
-    def __init__(self, current_max: int):
-        super().__init__(title="⚙️ تعديل إعدادات التذاكر")
+    def __init__(self, current_max: int, current_auto_close: int = 0):
+        super().__init__(title="⚙️ تعديل إعدادات التذاكر والخمول")
 
         self.max_tickets = TextInput(
             label="الحد الأقصى للتذاكر المفتوحة لكل عضو",
@@ -227,7 +227,15 @@ class SettingsModal(Modal):
             required=True,
             max_length=2
         )
+        self.auto_close = TextInput(
+            label="إغلاق التذاكر الخاملة بالساعات (0 للتعطيل)",
+            default=str(current_auto_close),
+            placeholder="مثال: 24 (للإغلاق بعد 24 ساعة من الخمول)",
+            required=True,
+            max_length=3
+        )
         self.add_item(self.max_tickets)
+        self.add_item(self.auto_close)
 
     async def on_submit(self, interaction: discord.Interaction):
         if not check_master_permission(interaction):
@@ -240,9 +248,21 @@ class SettingsModal(Modal):
         except ValueError:
             val = 1
 
+        try:
+            auto_val = int(self.auto_close.value.strip())
+            if auto_val < 0:
+                auto_val = 0
+        except ValueError:
+            auto_val = 0
+
         db.set_guild_setting(interaction.guild_id, "max_open_tickets", val)
+        db.set_guild_setting(interaction.guild_id, "auto_close_hours", auto_val)
+        
+        auto_text = f"`{auto_val}` ساعة (مع تنبيه العضو قبل الإغلاق)" if auto_val > 0 else "معطل ❌"
         await interaction.response.send_message(
-            f"⚙️ **تم تحديث الحد الأقصى للتذاكر المفتوحة إلى:** `{val}` تذكرة لكل عضو.",
+            f"⚙️ **تم تحديث إعدادات السيرفر بنجاح:**\n"
+            f"• **الحد الأقصى للتذاكر:** `{val}` تذكرة لكل عضو\n"
+            f"• **الإغلاق التلقائي للخمول:** {auto_text}",
             ephemeral=True
         )
 
@@ -297,6 +317,12 @@ class MasterMenuDropdown(Select):
                 value="setup_panel_here",
                 description="افتح نموذج إنشاء وتصميم لوحة التذاكر فوراً",
                 emoji="🎯"
+            ),
+            discord.SelectOption(
+                label="✏️ تعديل لوحة تذاكر قائمة بالكامل",
+                value="edit_existing_panel",
+                description="تعديل أقسام اللوحة، ألوان الإيمبد، الرتب، الصلاحيات والاستبيان",
+                emoji="✏️"
             ),
             discord.SelectOption(
                 label="📋 تعيين قناة السجلات",
@@ -354,6 +380,14 @@ class MasterMenuDropdown(Select):
 
         if val == "setup_panel_here":
             await interaction.response.send_modal(QuickSetupPanelModal(target_channel_id=interaction.channel_id))
+
+        elif val == "edit_existing_panel":
+            panels = db.get_panels() or []
+            if not panels:
+                return await interaction.response.send_message("❌ لا توجد لوحات تذاكر منشأة حالياً في هذا السيرفر.", ephemeral=True)
+            from bot.views.setup_wizard_views import SelectPanelToEditView
+            v = SelectPanelToEditView(interaction.client, panels)
+            await interaction.response.send_message("🎯 **اختر اللوحة المراد تعديلها بالكامل من القائمة المنسدلة:**", view=v, ephemeral=True)
 
         elif val == "set_log_channel":
             text_channels = [c for c in interaction.guild.channels if isinstance(c, discord.TextChannel)]
@@ -420,6 +454,15 @@ class MasterControlPanelView(View):
     async def btn_setup_panel(self, interaction: discord.Interaction, button: Button):
         await interaction.response.send_modal(QuickSetupPanelModal(target_channel_id=interaction.channel_id))
 
+    @discord.ui.button(label="✏️ تعديل لوحة قائمة", style=discord.ButtonStyle.secondary, emoji="✏️", custom_id="mcp_edit_panel", row=1)
+    async def btn_edit_panel(self, interaction: discord.Interaction, button: Button):
+        panels = db.get_panels() or []
+        if not panels:
+            return await interaction.response.send_message("❌ لا توجد لوحات تذاكر منشأة حالياً في هذا السيرفر. يمكنك إنشاء لوحة عبر زر '🎯 إنشاء لوحة تذاكر'.", ephemeral=True)
+        from bot.views.setup_wizard_views import SelectPanelToEditView
+        v = SelectPanelToEditView(self.bot, panels)
+        await interaction.response.send_message("🎯 **اختر اللوحة المراد تعديلها بالكامل من القائمة أسفله:**", view=v, ephemeral=True)
+
     @discord.ui.button(label="📋 قناة السجلات", style=discord.ButtonStyle.secondary, emoji="📋", custom_id="mcp_log_channel", row=1)
     async def btn_log_channel(self, interaction: discord.Interaction, button: Button):
         text_channels = [c for c in interaction.guild.channels if isinstance(c, discord.TextChannel)]
@@ -459,7 +502,8 @@ class MasterControlPanelView(View):
     @discord.ui.button(label="⚙️ إعدادات التذاكر", style=discord.ButtonStyle.secondary, emoji="⚙️", custom_id="mcp_settings", row=1)
     async def btn_settings(self, interaction: discord.Interaction, button: Button):
         curr_max = db.get_guild_setting(interaction.guild_id, "max_open_tickets", 1)
-        await interaction.response.send_modal(SettingsModal(current_max=curr_max))
+        curr_auto = db.get_guild_setting(interaction.guild_id, "auto_close_hours", 0)
+        await interaction.response.send_modal(SettingsModal(current_max=curr_max, current_auto_close=curr_auto))
 
     @discord.ui.button(label="🔄 تحديث اللوحة", style=discord.ButtonStyle.success, emoji="🔄", custom_id="mcp_refresh", row=2)
     async def btn_refresh(self, interaction: discord.Interaction, button: Button):

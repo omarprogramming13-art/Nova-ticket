@@ -11,7 +11,7 @@ from bot.utils.logger import TicketLogger
 from bot.views.modal_views import (
     TransferTicketModal, ChangePriorityModal, PrioritySelectView, RenameTicketModal,
     ChangeDepartmentModal, ChangeOwnerModal, AddMemberModal,
-    RemoveMemberModal, InternalNoteModal, RatingModal, AddEvidenceModal
+    RemoveMemberModal, InternalNoteModal, RatingModal, AddEvidenceModal, AuthorizeStaffModal
 )
 
 # 1. Base Class for Action Handling
@@ -90,12 +90,14 @@ class TicketActionBase(Select):
         if action != "restart" and not PermissionHandler.can_execute_action(guild, member, action, ticket_user_id, ticket_data=ticket):
             return await interaction.response.send_message(get_text("permission_denied", self.lang), ephemeral=True)
 
-        if action in ["transfer", "priority", "rename", "department", "owner", "add_member", "remove_member", "add_note", "rate_staff", "add_evidence"]:
+        if action in ["transfer", "priority", "rename", "department", "owner", "add_member", "remove_member", "add_note", "rate_staff", "add_evidence", "authorize_staff"]:
             # These open modals, cannot defer
             if action == "add_evidence":
                 if not db.is_evidence_enabled(interaction.channel_id):
                     return await interaction.response.send_message("⚠️ ميزة إضافة الأدلة معطلة لهذه التذكرة حالياً من قبل الإدارة.", ephemeral=True)
                 await interaction.response.send_modal(AddEvidenceModal(ticket, self.lang))
+            elif action == "authorize_staff":
+                await interaction.response.send_modal(AuthorizeStaffModal(ticket, self.lang))
             elif action == "rate_staff":
                 if not ticket.get("claimed_by"):
                     return await interaction.response.send_message("⚠️ لا يمكن تقييم التذكرة لأنها لم تُستلم من قبل أي موظف بعد.", ephemeral=True)
@@ -126,6 +128,10 @@ class TicketActionBase(Select):
             elif action == "add_member": await interaction.response.send_modal(AddMemberModal(ticket, self.lang))
             elif action == "remove_member": await interaction.response.send_modal(RemoveMemberModal(ticket, self.lang))
             elif action == "add_note": await interaction.response.send_modal(InternalNoteModal(ticket, self.lang))
+            elif action == "canned_responses":
+                from bot.views.canned_views import CannedResponseSelectView
+                v = CannedResponseSelectView(interaction.guild_id)
+                return await interaction.response.send_message("💬 **اختر رداً سريعاً لإرساله داخل التذكرة:**", view=v, ephemeral=True)
             return
 
         if action in ["close", "delete"]:
@@ -154,14 +160,18 @@ class TicketActionBase(Select):
                         await self._execute_delete(interaction, guild, member, ticket, ticket_user_id)
                 
                 workflow_view.final_callback = final_callback
+
+                auth_id = ticket.get("authorized_staff_id")
+                auth_notice = f"\n🔐 **تم تخويل الإداري:** <@{auth_id}> للقيام بإجراءات الاستبيان نيابة عن صاحب التذكرة.\n" if auth_id else ""
                 
                 embed = EmbedBuilder.create_embed(
                     title="⚠️ متطلبات إغلاق التذكرة",
                     description=(
                         "قبل إغلاق أو حذف هذه التذكرة، يرجى استكمال البيانات التالية:\n\n"
                         "1️⃣ **صاحب التذكرة:** تحديد نوع التذكرة والإجابة هل تم التعامل مع الطلب.\n"
-                        "2️⃣ **الموظف المستلم:** تحديد النتيجة وتفاصيل الحيثيات.\n\n"
-                        "⏳ يرجى من صاحب التذكرة البدء بالإجابة أولاً.\n"
+                        "2️⃣ **الموظف المستلم:** تحديد النتيجة وتفاصيل الحيثيات.\n"
+                        f"{auth_notice}\n"
+                        "⏳ يرجى من صاحب التذكرة (أو الإداري المخول) البدء بالإجابة أولاً.\n"
                         "*(ملاحظة: لمالك السيرفر (Owner) فقط زر تخطي الاستبيان عند الحاجة)*"
                     ),
                     color=EmbedBuilder.COLOR_WARNING
@@ -484,6 +494,8 @@ class TicketActionBase(Select):
         embed.add_field(name="⚡ الأولوية", value=f"`{priority}`", inline=True)
         embed.add_field(name="🔒 الحالة الحالية", value=f"{status_display}", inline=True)
         embed.add_field(name="👔 المستلم", value=f"<@{claimed_by}>" if claimed_by else "*لم تستلم بعد*", inline=True)
+        auth_staff = ticket.get('authorized_staff_id')
+        embed.add_field(name="🔐 الإداري المخول", value=f"<@{auth_staff}>" if auth_staff else "*لا يوجد*", inline=True)
         embed.add_field(name="📅 تاريخ الفتح", value=f"{created_at[:16]}", inline=True)
 
         if form_answers and form_answers.strip():
@@ -585,6 +597,7 @@ class MemberActionsSelect(TicketActionBase):
     def __init__(self, ticket: dict, lang: str = "ar"):
         super().__init__(ticket=ticket, lang=lang, placeholder="👤 أوامر العضو", options=[
             discord.SelectOption(label="معلومات وتفاصيل التذكرة", value="info", emoji="📋", description="عرض الأولوية، القسم، إجابات النموذج والتفاصيل"),
+            discord.SelectOption(label="🔐 تخويل إداري للاستبيان", value="authorize_staff", emoji="🔐", description="تخويل إداري لإجراء استبيان الإغلاق نيابة عنك"),
             discord.SelectOption(label="إغلاق التذكرة", value="close", emoji="🔒"),
             discord.SelectOption(label="إضافة دليل", value="add_evidence", emoji="📸"),
             discord.SelectOption(label="تقييم الإداري", value="rate_staff", emoji="⭐"),
@@ -609,6 +622,7 @@ class StaffManagementSelect(TicketActionBase):
             discord.SelectOption(label="إخفاء/إظهار", value="toggle_hide", emoji="👁️"),
             discord.SelectOption(label="تغيير القسم", value="department", emoji="🏢"),
             discord.SelectOption(label="تغيير الأولوية", value="priority", emoji="⚡"),
+            discord.SelectOption(label="ردود سريعة جاهزة", value="canned_responses", emoji="💬"),
             discord.SelectOption(label="🔄 ريستارت / إعادة تحديث القائمة", value="restart", emoji="🔄")
         ], custom_id="sel_staff_mgmt")
 
@@ -629,24 +643,57 @@ class StaffSystemSelect(TicketActionBase):
 class TicketControlView(View):
     def __init__(self, lang: str = "ar"):
         super().__init__(timeout=None)
+        self.lang = lang
         # Pass a dummy ticket, selects will fetch real data in callback
         dummy = {"id": 0, "status": "open"}
         self.add_item(MemberActionsSelect(dummy, lang))
         self.add_item(StaffManagementSelect(dummy, lang))
         self.add_item(StaffSystemSelect(dummy, lang))
 
-    @discord.ui.button(label="📋 تفاصيل ومعلومات التذكرة", style=discord.ButtonStyle.primary, custom_id="btn_ticket_quick_info", row=3)
+    @discord.ui.button(label="📌 استلام", style=discord.ButtonStyle.success, emoji="📌", custom_id="btn_quick_claim", row=3)
+    async def btn_quick_claim(self, interaction: discord.Interaction, button: discord.ui.Button):
+        handler = TicketActionBase({"id": 0, "status": "open"}, self.lang)
+        ticket = db.get_ticket_by_channel(interaction.channel_id)
+        if not ticket:
+            return await interaction.response.send_message("❌ لم يتم العثور على بيانات التذكرة.", ephemeral=True)
+        if ticket.get("claimed_by"):
+            await handler.process_action(interaction, "unclaim")
+        else:
+            await handler.process_action(interaction, "claim")
+
+    @discord.ui.button(label="🔒 إغلاق", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="btn_quick_close", row=3)
+    async def btn_quick_close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        handler = TicketActionBase({"id": 0, "status": "open"}, self.lang)
+        await handler.process_action(interaction, "close")
+
+    @discord.ui.button(label="💬 ردود جاهزة", style=discord.ButtonStyle.primary, emoji="💬", custom_id="btn_quick_canned", row=3)
+    async def btn_quick_canned(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not PermissionHandler.is_staff(interaction.user) and not PermissionHandler.is_bot_owner(interaction.user.id):
+            return await interaction.response.send_message("❌ هذا الخيار مخصص لطاقم الدعم الفني فقط.", ephemeral=True)
+        from bot.views.canned_views import CannedResponseSelectView
+        v = CannedResponseSelectView(interaction.guild_id)
+        await interaction.response.send_message("💬 **اختر رداً سريعاً لإرساله داخل التذكرة:**", view=v, ephemeral=True)
+
+    @discord.ui.button(label="🔔 تنبيه العضو", style=discord.ButtonStyle.secondary, emoji="🔔", custom_id="btn_quick_ping_user", row=3)
+    async def btn_quick_ping_user(self, interaction: discord.Interaction, button: discord.ui.Button):
+        handler = TicketActionBase({"id": 0, "status": "open"}, self.lang)
+        await handler.process_action(interaction, "summon_member")
+
+    @discord.ui.button(label="📋 معلومات", style=discord.ButtonStyle.secondary, emoji="📋", custom_id="btn_ticket_quick_info", row=3)
     async def btn_ticket_info(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         ticket = db.get_ticket_by_channel(interaction.channel_id)
         if not ticket:
             return await interaction.followup.send("❌ تعذر العثور على بيانات هذه التذكرة.", ephemeral=True)
-        
-        # Instantiate a helper handler to execute info
         handler = TicketActionBase(ticket, self.lang)
         await handler._execute_info(interaction, ticket)
 
-    @discord.ui.button(label="🔄 ريستارت القائمة", style=discord.ButtonStyle.secondary, custom_id="btn_restart_ticket_controls", row=3)
+    @discord.ui.button(label="📄 تصدير السجل", style=discord.ButtonStyle.secondary, emoji="📄", custom_id="btn_quick_transcript", row=4)
+    async def btn_quick_transcript(self, interaction: discord.Interaction, button: discord.ui.Button):
+        handler = TicketActionBase({"id": 0, "status": "open"}, self.lang)
+        await handler.process_action(interaction, "generate_transcript")
+
+    @discord.ui.button(label="🔄 ريستارت القائمة", style=discord.ButtonStyle.secondary, custom_id="btn_restart_ticket_controls", row=4)
     async def btn_restart_controls(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         ticket = db.get_ticket_by_channel(interaction.channel_id)

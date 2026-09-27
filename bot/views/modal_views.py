@@ -528,3 +528,86 @@ class AddEvidenceModal(Modal):
             details=f"رابط الدليل: {url} | ملاحظة: {note or 'بدون'}"
         )
 
+class AuthorizeStaffModal(Modal):
+    def __init__(self, ticket: dict, lang: str = "ar"):
+        super().__init__(title="🔐 تخويل إداري للاستبيان")
+        self.ticket = ticket
+        self.lang = lang
+
+        self.staff_input = TextInput(
+            label="معرف الإداري أو المنشن (Staff ID or @Mention)",
+            placeholder="مثال: @Admin أو 123456789012345678",
+            required=True,
+            max_length=100
+        )
+        self.note_input = TextInput(
+            label="سبب التخويل أو ملاحظة (اختياري)",
+            placeholder="مثال: لعدم التواجد أو استكمال الإجراءات مباشرة",
+            style=discord.TextStyle.short,
+            required=False,
+            max_length=200
+        )
+        self.add_item(self.staff_input)
+        self.add_item(self.note_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        from bot.utils.permissions import PermissionHandler
+        ticket_user_id = self.ticket.get("user_id")
+        is_owner = (interaction.user.id == ticket_user_id)
+        is_admin = (interaction.guild and interaction.user.id == interaction.guild.owner_id) or \
+                   PermissionHandler.is_bot_owner(interaction.user.id) or \
+                   interaction.user.guild_permissions.administrator
+
+        if not (is_owner or is_admin):
+            return await interaction.response.send_message("❌ هذا الإجراء مخصص فقط لمن فتح التذكرة لتخويل أحد الإداريين.", ephemeral=True)
+
+        val = self.staff_input.value.strip().replace("<@", "").replace(">", "").replace("!", "")
+        try:
+            target_id = int(val)
+            target_member = interaction.guild.get_member(target_id)
+            if not target_member:
+                try:
+                    target_member = await interaction.guild.fetch_member(target_id)
+                except Exception:
+                    target_member = None
+        except ValueError:
+            target_member = None
+
+        if not target_member:
+            return await interaction.response.send_message("❌ لم يتم العثور على العضو المحدد في السيرفر.", ephemeral=True)
+
+        if target_member.bot:
+            return await interaction.response.send_message("❌ لا يمكنك تخويل بوت، يجب اختيار إداري أو موظف دعم.", ephemeral=True)
+
+        if target_member.id == ticket_user_id:
+            return await interaction.response.send_message("⚠️ لا يمكنك تخويل صاحب التذكرة نفسه، الهدف من التخويل هو منح الصلاحية لإداري للقيام بالإجراءات نيابة عنك.", ephemeral=True)
+
+        if not PermissionHandler.is_staff(target_member) and not target_member.guild_permissions.administrator and target_member.id != interaction.guild.owner_id:
+            return await interaction.response.send_message("⚠️ العضو المحدد ليس من طاقم الإدارة أو الدعم الفني. يجب اختيار إداري أو موظف دعم معتمد.", ephemeral=True)
+
+        db.authorize_ticket_staff(interaction.channel_id, target_member.id)
+        note = self.note_input.value.strip() if self.note_input.value else "بدون ملاحظة"
+
+        embed = EmbedBuilder.create_embed(
+            title="🔐 تم تخويل الإداري للاستبيان بنجاح",
+            description=(
+                f"قام صاحب التذكرة {interaction.user.mention} بتخويل الإداري {target_member.mention} رسمياً.\n\n"
+                f"📋 **الصلاحيات الممنوحة:**\n"
+                f"• يستطيع الإداري المخول ({target_member.mention}) الآن القيام بكافة إجراءات الاستبيان (تحديد نوع التذكرة، نتيجة التعامل، والحيثيات) نيابة عن صاحب التذكرة دون الحاجة لانتظاره.\n"
+                f"• يمكن للإداري إنهاء إجراءات إغلاق أو حذف التذكرة مباشرة وبسلاسة.\n"
+                f"• **ملاحظة:** `{note}`\n\n"
+                f"*(يمكن إلغاء التخويل بأي وقت عبر أمر `/unauthorize`)*"
+            ),
+            color=EmbedBuilder.COLOR_SUCCESS
+        )
+        await interaction.response.send_message(content=f"{target_member.mention}", embed=embed)
+
+        await TicketLogger.log_action(
+            guild=interaction.guild,
+            ticket=self.ticket,
+            action_name="تخويل إداري",
+            executor=interaction.user,
+            details=f"تم تخويل: {target_member.display_name} ({target_member.id}) لإجراءات الاستبيان | ملاحظة: {note}"
+        )
+
+
