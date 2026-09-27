@@ -1,5 +1,5 @@
 import discord
-from discord.ui import Modal, TextInput
+from discord.ui import Modal, TextInput, View, Select
 from bot.database.db import db
 from bot.config.locales import get_text
 from bot.utils.embeds import EmbedBuilder
