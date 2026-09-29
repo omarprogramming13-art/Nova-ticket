@@ -166,6 +166,141 @@ class StatsCog(commands.Cog):
 
         await interaction.response.send_message(embed=embed)
 
+    def _build_staff_profile_embed(self, guild: discord.Guild, member: discord.Member) -> discord.Embed:
+        from bot.utils.permissions import PermissionHandler
+        profile = db.get_staff_full_profile(guild.id, member.id)
+        rank_val = PermissionHandler.get_member_rank(member)
+
+        # Rank badge
+        rank_title = "عضو عادي"
+        if rank_val >= PermissionHandler.ROLE_HIERARCHY["owner"]:
+            rank_title = "👑 مالك / إدارة عليا"
+        elif rank_val >= PermissionHandler.ROLE_HIERARCHY["support_manager"]:
+            rank_title = "🛡️ مدير الدعم الفني"
+        elif rank_val >= PermissionHandler.ROLE_HIERARCHY["admin"]:
+            rank_title = "⚡ مسؤول إداري (Admin)"
+        elif rank_val >= PermissionHandler.ROLE_HIERARCHY["senior_support"]:
+            rank_title = "🎖️ خبير دعم فني (Senior Support)"
+        elif rank_val >= PermissionHandler.ROLE_HIERARCHY["support"]:
+            rank_title = "👔 موظف دعم فني (Support)"
+
+        rank_pos = f"#{profile['rank']}" if profile.get("rank") else "غير مصنف"
+
+        embed = discord.Embed(
+            title=f"👔 ملف وإنجازات الموظف • {member.display_name}",
+            description=(
+                f"👤 **الموظف:** {member.mention} (`{member.id}`)\n"
+                f"🏷️ **الرتبة في النظام:** `{rank_title}`\n"
+                f"🏆 **الترتيب في السيرفر:** `{rank_pos}` بين طاقم الدعم\n"
+                f"───────────────────────────"
+            ),
+            color=0x5865F2
+        )
+
+        # 1. Ticket Performance & Points
+        embed.add_field(
+            name="📊 أداء التذاكر والنقاط:",
+            value=(
+                f"• **مجموع النقاط:** **`{profile['points']}`** نقطة\n"
+                f"• **إجمالي التذاكر المستلمة:** `{profile['tickets_handled']}` تذكرة\n"
+                f"• **التذاكر النشطة حالياً:** `{profile['tickets_active']}` تذكرة\n"
+                f"• **التذاكر المنجزة والمغلقة:** `{profile['tickets_closed']}` تذكرة"
+            ),
+            inline=True
+        )
+
+        # 2. Ratings & Client Satisfaction
+        stars_dist = profile.get("stars_distribution", {})
+        stars_breakdown = f"5⭐ `{stars_dist.get(5, 0)}` | 4⭐ `{stars_dist.get(4, 0)}` | 3⭐ `{stars_dist.get(3, 0)}` | 2⭐ `{stars_dist.get(2, 0)}` | 1⭐ `{stars_dist.get(1, 0)}`"
+        avg_stars_display = f"**{profile['avg_stars']} / 5.0 ⭐**" if profile['total_ratings'] > 0 else "*بدون تقييم بعد*"
+
+        embed.add_field(
+            name="⭐ تقييم رضا العملاء:",
+            value=(
+                f"• **المتوسط العام:** {avg_stars_display}\n"
+                f"• **عدد التقييمات:** `{profile['total_ratings']}` تقييم\n"
+                f"• **توزيع النجوم:**\n{stars_breakdown}"
+            ),
+            inline=True
+        )
+
+        # 3. Actions and Operations Breakdown
+        actions_map = profile.get("actions_breakdown", {})
+        action_names_ar = {
+            "استلام التذكرة": "📌 استلام تذاكر",
+            "إغلاق التذكرة": "🔒 إغلاق تذاكر",
+            "إلغاء الاستلام": "🔓 إلغاء استلام",
+            "تحويل التذكرة": "🔄 تحويل لموظف آخر",
+            "تغيير القسم": "🏢 نقل وتغيير قسم",
+            "تعديل الأولوية": "⚡ تعديل أولوية",
+            "قفل التذكرة": "🔐 قفل التذكرة",
+            "فك قفل التذكرة": "🔓 فك قفل التذكرة",
+            "تعليق التذكرة": "⏸️ تعليق التذكرة",
+            "استئناف التذكرة": "▶️ استئناف التذكرة",
+            "إضافة ملاحظة إدارية": "📝 تدوين ملاحظات",
+            "إعادة فتح التذكرة": "🔓 إعادة فتح",
+            "حذف التذكرة": "🗑️ حذف تذاكر",
+            "نداء صاحب التذكرة": "🔔 نداء العضو",
+            "تغيير اسم التذكرة": "✏️ إعادة تسمية"
+        }
+
+        action_lines = []
+        for act_raw, count in actions_map.items():
+            label = action_names_ar.get(act_raw, f"• {act_raw}")
+            action_lines.append(f"• **{label}:** `{count}` مرة")
+
+        actions_text = "\n".join(action_lines[:8]) if action_lines else "*لا توجد عمليات مسجلة في السجل بعد*"
+        embed.add_field(
+            name=f"⚙️ سجل الإجراءات والعمليات المنفذة (`{profile['total_actions']}` عملية إجمالاً):",
+            value=actions_text,
+            inline=False
+        )
+
+        # 4. Latest feedbacks if any
+        feedbacks = profile.get("feedbacks", [])
+        if feedbacks:
+            fb_lines = []
+            for fb in feedbacks[:3]:
+                u_str = f"<@{fb['user_id']}>" if fb.get('user_id') else "عميل"
+                fb_lines.append(f"💬 \"{fb['feedback']}\" — {fb['stars']}⭐ ({u_str})")
+            embed.add_field(
+                name="💬 آخر آراء وتعليقات العملاء:",
+                value="\n".join(fb_lines),
+                inline=False
+            )
+
+        if member.display_avatar:
+            embed.set_thumbnail(url=member.display_avatar.url)
+
+        embed.set_footer(text=f"طلب بواسطة {guild.name} • ملف طاقم الدعم الفني المتقدم")
+        embed.timestamp = discord.utils.utcnow()
+        return embed
+
+    @app_commands.command(name="staff_info", description="عرض ملف وإحصائيات وإنجازات موظف الدعم الفني بالكامل (Staff Profile & Actions)")
+    @app_commands.describe(staff="الموظف المراد عرض ملفه (اتركه فارغاً لعرض ملفك)")
+    async def staff_info_slash(self, interaction: discord.Interaction, staff: Optional[discord.Member] = None):
+        if not interaction.guild:
+            return await interaction.response.send_message("❌ يرجى استخدام هذا الأمر داخل السيرفر.", ephemeral=True)
+
+        target = staff or interaction.user
+        if not isinstance(target, discord.Member):
+            target = interaction.guild.get_member(target.id) or target
+
+        embed = self._build_staff_profile_embed(interaction.guild, target)
+        await interaction.response.send_message(embed=embed)
+
+    @commands.command(name="staff_info", aliases=["staff", "اداري", "مشرف", "طاقم", "بروفايل_اداري", "انجازات"])
+    async def staff_info_prefix(self, ctx: commands.Context, staff: Optional[discord.Member] = None):
+        if not ctx.guild:
+            return await ctx.send("❌ يرجى استخدام هذا الأمر داخل السيرفر.")
+
+        target = staff or ctx.author
+        if not isinstance(target, discord.Member):
+            target = ctx.guild.get_member(target.id) or target
+
+        embed = self._build_staff_profile_embed(ctx.guild, target)
+        await ctx.send(embed=embed)
+
     @commands.command(name="top", aliases=["leaderboard", "توب", "المتصدرين", "شرف"])
     async def top_prefix(self, ctx: commands.Context):
         if not ctx.guild:

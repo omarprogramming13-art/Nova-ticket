@@ -221,8 +221,15 @@ class PermissionHandler:
                     return False
             return user_rank >= PermissionHandler.ROLE_HIERARCHY["support"]
 
+        # Delete action: Allowed for the staff member who claimed the ticket OR Admin/Manager rank
+        if action_name == "delete":
+            claimed_by = ticket_data.get("claimed_by") if ticket_data else None
+            if claimed_by and member.id == claimed_by:
+                return True
+            return user_rank >= PermissionHandler.ROLE_HIERARCHY["support_manager"]
+
         # High-privilege Admin actions
-        if action_name in ["delete", "owner"]:
+        if action_name in ["owner"]:
             return user_rank >= PermissionHandler.ROLE_HIERARCHY["support_manager"]
 
         return False

@@ -80,10 +80,14 @@ class TicketActionBase(Select):
             if not PermissionHandler.is_staff(member) and not PermissionHandler.is_bot_owner(member.id):
                 return await interaction.response.send_message("❌ عفواً! هذه الخيارات والأوامر مخصصة فقط لإدارة وطاقم الدعم الفني.", ephemeral=True)
 
-            # Restrict critical destructive actions to Admin rank
-            if action in ["toggle_evidence", "delete", "audit_log", "generate_transcript"]:
+            # Restrict critical actions (delete is allowed for claimed staff as well)
+            if action in ["toggle_evidence", "audit_log", "generate_transcript"]:
                 if not PermissionHandler.is_admin(member) and not PermissionHandler.is_bot_owner(member.id):
                     return await interaction.response.send_message("❌ عفواً! هذا الخيار مخصص فقط لمسؤولي الإدارة (Admin).", ephemeral=True)
+
+            if action == "delete":
+                if not PermissionHandler.is_admin(member) and not PermissionHandler.is_bot_owner(member.id) and claimed_by != member.id:
+                    return await interaction.response.send_message("❌ خيار حذف التذكرة متاح للموظف المستلم للتذكرة أو مسؤولي الإدارة فقط.", ephemeral=True)
 
             if action not in ["claim"] and not claimed_by:
                 user_rank = PermissionHandler.get_member_rank(member)

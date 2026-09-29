@@ -1193,24 +1193,47 @@ class DatabaseManager:
         return True
 
     # --- Staff Leaderboard & Ranking ---
-    def get_staff_leaderboard(self, guild_id: int, limit: int = 10) -> list:
-        # Auto-sync ratings data for this guild into staff_stats
+    def get_staff_leaderboard(self, guild_id: Any, limit: int = 10) -> list:
+        g_id_int = int(guild_id) if str(guild_id).isdigit() else 0
+        g_id_str = str(guild_id)
+
         try:
+            # 1. Sync from tickets table (all tickets that have claimed_by)
+            claimed_rows = self._run_query("""
+                SELECT claimed_by as user_id, COUNT(id) as cnt
+                FROM tickets
+                WHERE (guild_id = ? OR guild_id = ?) AND claimed_by IS NOT NULL AND claimed_by != 0
+                GROUP BY claimed_by
+            """, (g_id_int, g_id_str), fetch="all") or []
+
+            for row in claimed_rows:
+                u_id = row.get("user_id")
+                cnt = row.get("cnt", 0)
+                if u_id:
+                    self._run_query("INSERT OR IGNORE INTO staff_stats (guild_id, user_id, points, tickets_handled) VALUES (?, ?, ?, ?)", (g_id_int, u_id, cnt * 10, cnt))
+                    self._run_query("""
+                        UPDATE staff_stats
+                        SET tickets_handled = CASE WHEN tickets_handled < ? THEN ? ELSE tickets_handled END,
+                            points = CASE WHEN points <= 0 THEN ? * 10 ELSE points END
+                        WHERE (guild_id = ? OR guild_id = ?) AND user_id = ?
+                    """, (cnt, cnt, cnt, g_id_int, g_id_str, u_id))
+
+            # 2. Sync from ratings table
             ratings_agg = self._run_query("""
                 SELECT r.staff_id as user_id, 
                        COUNT(r.id) as rat_count, 
                        SUM(r.stars) as rat_stars,
-                       SUM(CASE WHEN r.stars = 5 THEN 15 WHEN r.stars = 4 THEN 10 WHEN r.stars = 3 THEN 5 WHEN r.stars = 2 THEN 1 ELSE 0 END) as calc_points
+                       SUM(CASE WHEN r.stars = 5 THEN 15 WHEN r.stars = 4 THEN 10 WHEN r.stars = 3 THEN 5 WHEN r.stars = 2 THEN 2 ELSE 0 END) as calc_points
                 FROM ratings r
-                JOIN tickets t ON (r.ticket_id = t.id OR r.ticket_id = t.channel_id)
-                WHERE t.guild_id = ?
+                LEFT JOIN tickets t ON (r.ticket_id = t.id OR r.ticket_id = t.channel_id)
+                WHERE (t.guild_id = ? OR t.guild_id = ? OR t.guild_id IS NULL) AND r.staff_id IS NOT NULL AND r.staff_id != 0
                 GROUP BY r.staff_id
-            """, (guild_id,), fetch="all") or []
+            """, (g_id_int, g_id_str), fetch="all") or []
 
             for agg in ratings_agg:
                 u_id = agg.get("user_id")
                 if u_id:
-                    self._run_query("INSERT OR IGNORE INTO staff_stats (guild_id, user_id) VALUES (?, ?)", (guild_id, u_id))
+                    self._run_query("INSERT OR IGNORE INTO staff_stats (guild_id, user_id, points, tickets_handled) VALUES (?, ?, 0, 0)", (g_id_int, u_id))
                     r_stars = agg.get("rat_stars") or 0
                     r_count = agg.get("rat_count") or 0
                     c_points = agg.get("calc_points") or 0
@@ -1218,9 +1241,30 @@ class DatabaseManager:
                         UPDATE staff_stats 
                         SET total_stars = CASE WHEN total_stars < ? THEN ? ELSE total_stars END,
                             total_ratings = CASE WHEN total_ratings < ? THEN ? ELSE total_ratings END,
-                            points = CASE WHEN points < ? THEN ? ELSE points END
-                        WHERE guild_id = ? AND user_id = ?
-                    """, (r_stars, r_stars, r_count, r_count, c_points, c_points, guild_id, u_id))
+                            points = CASE WHEN points <= 0 THEN ? ELSE points END
+                        WHERE (guild_id = ? OR guild_id = ?) AND user_id = ?
+                    """, (r_stars, r_stars, r_count, r_count, c_points, g_id_int, g_id_str, u_id))
+
+            # 3. Sync from ticket_audit_logs if any staff performed actions
+            audit_staff = self._run_query("""
+                SELECT l.executor_id as user_id, COUNT(l.id) as act_count
+                FROM ticket_audit_logs l
+                JOIN tickets t ON l.ticket_id = t.id
+                WHERE (t.guild_id = ? OR t.guild_id = ?) AND l.executor_id IS NOT NULL AND l.executor_id != 0
+                GROUP BY l.executor_id
+            """, (g_id_int, g_id_str), fetch="all") or []
+
+            for row in audit_staff:
+                u_id = row.get("user_id")
+                act_cnt = row.get("act_count", 0)
+                if u_id:
+                    self._run_query("INSERT OR IGNORE INTO staff_stats (guild_id, user_id, points, tickets_handled) VALUES (?, ?, ?, ?)", (g_id_int, u_id, act_cnt * 5, 1))
+                    self._run_query("""
+                        UPDATE staff_stats
+                        SET points = CASE WHEN points <= 0 THEN ? * 5 ELSE points END
+                        WHERE (guild_id = ? OR guild_id = ?) AND user_id = ?
+                    """, (act_cnt, g_id_int, g_id_str, u_id))
+
         except Exception as e:
             sys.stderr.write(f"[LEADERBOARD_SYNC_WARN] {e}\n")
 
@@ -1228,11 +1272,109 @@ class DatabaseManager:
             SELECT user_id, points, tickets_handled, total_stars, total_ratings,
                    CASE WHEN total_ratings > 0 THEN ROUND(CAST(total_stars AS FLOAT) / total_ratings, 2) ELSE 0.0 END as avg_stars
             FROM staff_stats
-            WHERE guild_id = ? AND (points > 0 OR tickets_handled > 0 OR total_ratings > 0)
+            WHERE (guild_id = ? OR guild_id = ?) AND (points > 0 OR tickets_handled > 0 OR total_ratings > 0)
             ORDER BY points DESC, tickets_handled DESC, total_stars DESC
             LIMIT ?
-        """, (guild_id, limit), fetch="all")
+        """, (g_id_int, g_id_str, limit), fetch="all")
         return rows or []
+
+    def get_staff_full_profile(self, guild_id: Any, staff_id: Any) -> Dict[str, Any]:
+        g_id_int = int(guild_id) if str(guild_id).isdigit() else 0
+        g_id_str = str(guild_id)
+        s_id_int = int(staff_id) if str(staff_id).isdigit() else 0
+        s_id_str = str(staff_id)
+
+        # Trigger sync for this staff
+        self.get_staff_leaderboard(guild_id, limit=100)
+
+        # 1. Staff stats & points
+        stats_row = self._run_query("""
+            SELECT * FROM staff_stats WHERE (guild_id = ? OR guild_id = ?) AND (user_id = ? OR user_id = ?)
+        """, (g_id_int, g_id_str, s_id_int, s_id_str), fetch="one") or {}
+
+        # 2. Rank calculation
+        all_staff = self.get_staff_leaderboard(guild_id, limit=200)
+        rank = None
+        for idx, row in enumerate(all_staff, 1):
+            if str(row.get("user_id")) == str(staff_id):
+                rank = idx
+                break
+
+        # 3. Tickets breakdown from tickets table
+        tickets_tot = self._run_query("""
+            SELECT COUNT(*) as tot FROM tickets 
+            WHERE (guild_id = ? OR guild_id = ?) AND (claimed_by = ? OR claimed_by = ?)
+        """, (g_id_int, g_id_str, s_id_int, s_id_str), fetch="one")
+        tot_claimed = tickets_tot["tot"] if tickets_tot and "tot" in tickets_tot else 0
+
+        tickets_open = self._run_query("""
+            SELECT COUNT(*) as opn FROM tickets 
+            WHERE (guild_id = ? OR guild_id = ?) AND (claimed_by = ? OR claimed_by = ?) AND (status = 'open' OR status = 'claimed' OR status = 'on_hold' OR status = 'locked')
+        """, (g_id_int, g_id_str, s_id_int, s_id_str), fetch="one")
+        open_claimed = tickets_open["opn"] if tickets_open and "opn" in tickets_open else 0
+
+        tickets_closed = self._run_query("""
+            SELECT COUNT(*) as cls FROM tickets 
+            WHERE (guild_id = ? OR guild_id = ?) AND (claimed_by = ? OR claimed_by = ?) AND (status = 'closed' OR status = 'deleted')
+        """, (g_id_int, g_id_str, s_id_int, s_id_str), fetch="one")
+        closed_claimed = tickets_closed["cls"] if tickets_closed and "cls" in tickets_closed else 0
+
+        # 4. Rating details & breakdown
+        ratings_rows = self._run_query("""
+            SELECT stars, feedback, user_id, created_at FROM ratings 
+            WHERE staff_id = ? OR staff_id = ? ORDER BY id DESC
+        """, (s_id_int, s_id_str), fetch="all") or []
+
+        stars_dist = {5: 0, 4: 0, 3: 0, 2: 0, 1: 0}
+        total_stars = 0
+        feedbacks = []
+        for r in ratings_rows:
+            st = int(r.get("stars", 5))
+            st = max(1, min(5, st))
+            stars_dist[st] += 1
+            total_stars += st
+            if r.get("feedback") and r.get("feedback").strip():
+                feedbacks.append({
+                    "user_id": r.get("user_id"),
+                    "stars": st,
+                    "feedback": r.get("feedback").strip(),
+                    "created_at": r.get("created_at", "")[:10]
+                })
+
+        total_ratings = len(ratings_rows)
+        avg_stars = round(total_stars / total_ratings, 2) if total_ratings > 0 else 0.0
+
+        # 5. Audit logs / Detailed action operations breakdown
+        audit_rows = self._run_query("""
+            SELECT l.action, COUNT(l.id) as cnt
+            FROM ticket_audit_logs l
+            WHERE (l.executor_id = ? OR l.executor_id = ?)
+            GROUP BY l.action
+        """, (s_id_int, s_id_str), fetch="all") or []
+
+        actions_map = {row["action"]: row["cnt"] for row in audit_rows if row.get("action")}
+        total_actions = sum(actions_map.values())
+
+        # Fallback tickets_handled if 0
+        tickets_handled = max(stats_row.get("tickets_handled", 0), tot_claimed)
+        points = stats_row.get("points", 0)
+        if points == 0 and (tickets_handled > 0 or total_ratings > 0 or total_actions > 0):
+            points = (tickets_handled * 10) + (total_ratings * 10) + (total_actions * 2)
+
+        return {
+            "user_id": s_id_int or staff_id,
+            "points": points,
+            "rank": rank,
+            "tickets_handled": tickets_handled,
+            "tickets_active": open_claimed,
+            "tickets_closed": closed_claimed,
+            "total_ratings": total_ratings,
+            "avg_stars": avg_stars,
+            "stars_distribution": stars_dist,
+            "feedbacks": feedbacks[:5],
+            "actions_breakdown": actions_map,
+            "total_actions": total_actions
+        }
 
     # --- Inactivity Auto-Close Helper Methods ---
     def get_open_tickets_for_inactivity(self, guild_id: int = None) -> list:
