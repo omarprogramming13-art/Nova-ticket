@@ -115,29 +115,62 @@ class StatsCog(commands.Cog):
             db.delete_all_ratings()
             await interaction.response.send_message("✅ تم مسح جميع التقييمات في النظام بنجاح.")
 
-    def _build_leaderboard_embed(self, guild: discord.Guild) -> Optional[discord.Embed]:
+    def _build_leaderboard_embed(self, guild: discord.Guild) -> discord.Embed:
+        from bot.utils.permissions import PermissionHandler
         leaders = db.get_staff_leaderboard(guild.id, limit=10)
-        if not leaders:
-            return None
 
         embed = discord.Embed(
             title="🏆 لوحة شرف وصدارة طاقم الدعم الفني (Staff Leaderboard)",
-            description=f"أفضل موظفي الدعم الفني في سيرفر **{guild.name}** حسب سرعة الإنجاز، النقاط، وتقييم النجوم:\n",
             color=0xFEE75C
         )
 
         medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
-        lines = []
-        for idx, row in enumerate(leaders):
-            badge = medals[idx] if idx < len(medals) else f"`#{idx+1}`"
-            u_mention = f"<@{row['user_id']}>"
-            pts = row.get("points", 0)
-            tkts = row.get("tickets_handled", 0)
-            stars = row.get("avg_stars", 0.0)
-            star_str = f"{stars} ⭐" if stars > 0 else "بدون تقييم"
-            lines.append(f"{badge} {u_mention} — **{pts}** نقطة | `{tkts}` تذكرة منجزة | {star_str}")
 
-        embed.add_field(name="قائمة المتصدرين:", value="\n\n".join(lines), inline=False)
+        if leaders:
+            embed.description = f"أفضل موظفي الدعم الفني في سيرفر **{guild.name}** حسب سرعة الإنجاز، النقاط، وتقييم النجوم:\n"
+            lines = []
+            for idx, row in enumerate(leaders):
+                badge = medals[idx] if idx < len(medals) else f"`#{idx+1}`"
+                u_mention = f"<@{row['user_id']}>"
+                pts = row.get("points", 0)
+                tkts = row.get("tickets_handled", 0)
+                stars = row.get("avg_stars", 0.0)
+                star_str = f"{stars} ⭐" if stars > 0 else "بدون تقييم"
+                lines.append(f"{badge} {u_mention} — **{pts}** نقطة | `{tkts}` تذكرة منجزة | {star_str}")
+            embed.add_field(name="قائمة المتصدرين:", value="\n\n".join(lines), inline=False)
+        else:
+            # Find staff members in server
+            staff_members = [m for m in guild.members if not m.bot and (PermissionHandler.is_staff(m) or PermissionHandler.is_admin(m))]
+            if staff_members:
+                embed.description = (
+                    f"لوحة الشرف جاهزة للمنافسة في سيرفر **{guild.name}**!\n"
+                    f"يبدأ احتساب النقاط وتصنيف المتصدرين تلقائياً بمجرد استلام التذاكر وإغلاقها وتلقي التقييمات ⭐:\n"
+                )
+                lines = []
+                for idx, m in enumerate(staff_members[:10]):
+                    badge = medals[idx] if idx < len(medals) else f"`#{idx+1}`"
+                    lines.append(f"{badge} {m.mention} — **0** نقطة | `0` تذكرة | 🟢 جاهز للاستلام")
+                embed.add_field(name="طاقم الدعم الفني المعتمد:", value="\n\n".join(lines), inline=False)
+            else:
+                embed.description = (
+                    f"مرحباً بك في لوحة صدارة طاقم الدعم لسيرفر **{guild.name}**! 🏆\n\n"
+                    f"لم يتم تسجيل أي نشاط تذاكر بعد.\n\n"
+                    f"💡 **كيفية تشغيل وتفعيل التنافس والنقاط:**\n"
+                    f"1️⃣ اضبط رتب الإدارة والدعم من خلال أمر `/settings` أو `/setup_panel`.\n"
+                    f"2️⃣ عند قيام الموظف باستلام وإنجاز التذاكر، ستُحتسب النقاط والتقييمات وتظهر هنا فوراً!"
+                )
+
+            embed.add_field(
+                name="💡 نظام احتساب النقاط:",
+                value=(
+                    "• 📌 **استلام وإنجاز تذكرة:** `+10` نقاط\n"
+                    "• ⭐ **تقييم 5 نجوم (ممتاز):** `+15` نقطة إضافية\n"
+                    "• ⭐ **تقييم 4 نجوم (جيد جداً):** `+10` نقاط إضافية\n"
+                    "• ⚙️ **العمليات والتحويلات الإدارية:** نقاط خبرة تراكمية"
+                ),
+                inline=False
+            )
+
         embed.set_footer(text="نظام تذاكر ديسكورد المتقدم • تحديث فوري للنقاط والتقييم")
         if guild.icon:
             embed.set_thumbnail(url=guild.icon.url)
@@ -150,9 +183,6 @@ class StatsCog(commands.Cog):
             return await interaction.response.send_message("❌ يرجى استخدام هذا الأمر داخل السيرفر.", ephemeral=True)
 
         embed = self._build_leaderboard_embed(interaction.guild)
-        if not embed:
-            return await interaction.response.send_message("📊 لا توجد إحصائيات أو نقاط مسجلة لطاقم الدعم في هذا السيرفر بعد.", ephemeral=True)
-
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="top", description="عرض صدارة وتوب طاقم الدعم الفني والنقاط (Top Staff Leaderboard)")
@@ -161,9 +191,6 @@ class StatsCog(commands.Cog):
             return await interaction.response.send_message("❌ يرجى استخدام هذا الأمر داخل السيرفر.", ephemeral=True)
 
         embed = self._build_leaderboard_embed(interaction.guild)
-        if not embed:
-            return await interaction.response.send_message("📊 لا توجد إحصائيات أو نقاط مسجلة لطاقم الدعم في هذا السيرفر بعد.", ephemeral=True)
-
         await interaction.response.send_message(embed=embed)
 
     def _build_staff_profile_embed(self, guild: discord.Guild, member: discord.Member) -> discord.Embed:
@@ -307,9 +334,6 @@ class StatsCog(commands.Cog):
             return await ctx.send("❌ يرجى استخدام هذا الأمر داخل السيرفر.")
 
         embed = self._build_leaderboard_embed(ctx.guild)
-        if not embed:
-            return await ctx.send("📊 لا توجد إحصائيات أو نقاط مسجلة لطاقم الدعم في هذا السيرفر بعد.")
-
         await ctx.send(embed=embed)
 
 async def setup(bot: commands.Bot):
