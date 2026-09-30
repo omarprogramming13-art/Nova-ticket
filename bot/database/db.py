@@ -1269,14 +1269,19 @@ class DatabaseManager:
             sys.stderr.write(f"[LEADERBOARD_SYNC_WARN] {e}\n")
 
         rows = self._run_query("""
-            SELECT user_id, points, tickets_handled, total_stars, total_ratings,
-                   CASE WHEN total_ratings > 0 THEN ROUND(CAST(total_stars AS FLOAT) / total_ratings, 2) ELSE 0.0 END as avg_stars
+            SELECT user_id, points, tickets_handled, total_stars, total_ratings
             FROM staff_stats
             WHERE (guild_id = ? OR guild_id = ?) AND (points > 0 OR tickets_handled > 0 OR total_ratings > 0)
             ORDER BY points DESC, tickets_handled DESC, total_stars DESC
             LIMIT ?
-        """, (g_id_int, g_id_str, limit), fetch="all")
-        return rows or []
+        """, (g_id_int, g_id_str, limit), fetch="all") or []
+
+        for r in rows:
+            tot_stars = r.get("total_stars") or 0
+            tot_ratings = r.get("total_ratings") or 0
+            r["avg_stars"] = round(tot_stars / tot_ratings, 2) if tot_ratings > 0 else 0.0
+
+        return rows
 
     def get_staff_full_profile(self, guild_id: Any, staff_id: Any) -> Dict[str, Any]:
         g_id_int = int(guild_id) if str(guild_id).isdigit() else 0
