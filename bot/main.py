@@ -214,11 +214,22 @@ class TicketBot(commands.Bot):
 
     async def on_ready(self):
         logger.info(f"⚡ Bot logged in successfully as: {self.user.name} ({self.user.id})")
+        
+        # 1. Instant sync to all currently connected servers (0-second propagation)
+        for guild in self.guilds:
+            try:
+                self.tree.copy_global_to(guild=guild)
+                synced_guild = await self.tree.sync(guild=guild)
+                logger.info(f"⚡ Instantly synced {len(synced_guild)} slash commands to server: '{guild.name}' ({guild.id})")
+            except Exception as ge:
+                logger.warning(f"Guild sync warning for {guild.name}: {ge}")
+
+        # 2. Also sync globally
         try:
             synced = await self.tree.sync()
             logger.info(f"✅ Synced {len(synced)} Slash Command(s) globally.")
         except Exception as e:
-            logger.error(f"❌ Failed to sync slash commands: {e}")
+            logger.error(f"❌ Failed to sync slash commands globally: {e}")
 
         # Sync bot profile avatar with server icon if available
         for guild in self.guilds:
@@ -234,6 +245,23 @@ class TicketBot(commands.Bot):
         await self.change_presence(
             activity=discord.Activity(type=discord.ActivityType.watching, name="Tickets | /setup_panel")
         )
+
+    # Force sync command for server owner / admins
+    @commands.command(name="sync", aliases=["مزامنة", "تحديث_الاوامر", "sync_commands"])
+    async def sync_prefix(self, ctx: commands.Context):
+        if not ctx.guild:
+            return await ctx.send("❌ يرجى استخدام هذا الأمر داخل السيرفر.")
+        
+        if not (ctx.author.id == ctx.guild.owner_id or ctx.author.guild_permissions.administrator or PermissionHandler.is_bot_owner(ctx.author.id)):
+            return await ctx.send("❌ هذا الأمر مخصص لمالك ومسؤولي السيرفر فقط.")
+
+        status_msg = await ctx.send("⏳ جاري مزامنة وتحديث جميع أوامر السلاش في السيرفر فورياً...")
+        try:
+            self.tree.copy_global_to(guild=ctx.guild)
+            synced = await self.tree.sync(guild=ctx.guild)
+            await status_msg.edit(content=f"✅ **تمت مزامنة وتفعيل `{len(synced)}` أمر سلاش بنجاح وفورياً في هذا السيرفر!**\nجرب الآن كتابة `/` وستظهر لك كافة الأوامر.")
+        except Exception as e:
+            await status_msg.edit(content=f"❌ فشلت المزامنة: `{e}`")
 
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.guild:
