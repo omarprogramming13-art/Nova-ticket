@@ -211,7 +211,9 @@ class TicketQuestionsModal(Modal):
 
 
 class TicketCategorySelect(Select):
-    def __init__(self, categories: list, panel_id: int, lang: str = "ar"):
+    def __init__(self, categories: list = None, panel_id: int = 0, lang: str = "ar"):
+        if categories is None:
+            categories = []
         self.categories = categories
         self.panel_id = panel_id
         self.lang = lang
@@ -270,8 +272,29 @@ class TicketCategorySelect(Select):
             )
 
         try:
+            panel_id_target = getattr(self, 'panel_id', 0)
+            if not panel_id_target or panel_id_target == 0:
+                try:
+                    custom_id_str = interaction.data.get("custom_id", "")
+                    if "panel_select_" in custom_id_str:
+                        panel_id_target = int(custom_id_str.replace("panel_select_", ""))
+                except Exception:
+                    panel_id_target = 0
+
+            categories = getattr(self, 'categories', None)
+            if not categories and panel_id_target:
+                panel_data = db.get_panel_by_id(panel_id_target)
+                if panel_data and panel_data.get("categories"):
+                    categories = panel_data.get("categories", [])
+
+            if not categories:
+                panels = db.get_panels() or []
+                panel = next((p for p in panels if p["id"] == panel_id_target), None) if panel_id_target else (panels[0] if panels else None)
+                if panel and panel.get("categories"):
+                    categories = panel.get("categories", [])
+
             # 1.5 Check restricted roles
-            category = next((c for c in self.categories if str(c.get("id")) == category_id), None)
+            category = next((c for c in (categories or []) if str(c.get("id")) == str(category_id)), None)
             if category and "restricted_role_ids" in category and category["restricted_role_ids"]:
                 user_role_ids = [role.id for role in interaction.user.roles]
                 if not any(rid in user_role_ids for rid in category["restricted_role_ids"]):
