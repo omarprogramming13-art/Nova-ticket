@@ -11,6 +11,7 @@ class StatsCog(commands.Cog):
 
     @app_commands.command(name="ticket_stats", description="View ticket system statistics / إحصائيات وتقارير التذاكر المتقدمة")
     async def ticket_stats(self, interaction: discord.Interaction):
+        await interaction.response.defer()
         stats = db.get_statistics()
         
         embed = EmbedBuilder.create_embed(
@@ -48,11 +49,12 @@ class StatsCog(commands.Cog):
         if top_staff_str:
             embed.add_field(name="🏆 أفضل موظفي الدعم الفني:", value=top_staff_str, inline=False)
 
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="view_ratings", description="View staff ratings / عرض تقييمات الموظفين")
     @app_commands.describe(staff="The staff member to view ratings for")
     async def view_ratings(self, interaction: discord.Interaction, staff: discord.Member = None):
+        await interaction.response.defer()
         if staff:
             ratings = db.get_staff_ratings(staff.id)
             title = f"⭐ تقييمات {staff.display_name}"
@@ -61,7 +63,7 @@ class StatsCog(commands.Cog):
             title = "⭐ أحدث التقييمات العامة"
 
         if not ratings:
-            return await interaction.response.send_message("❌ لا توجد تقييمات مسجلة حالياً.", ephemeral=True)
+            return await interaction.followup.send("❌ لا توجد تقييمات مسجلة حالياً.", ephemeral=True)
 
         embed = EmbedBuilder.create_embed(title=title, description="قائمة بأحدث تقييمات طاقم الدعم الفني:", color=EmbedBuilder.COLOR_WARNING)
         for r in ratings[:10]:
@@ -74,7 +76,7 @@ class StatsCog(commands.Cog):
                 value=f"• **Staff:** {staff_mention}\n• **Stars:** {'⭐' * r['stars']}\n• **Feedback:** {feedback}\n• **Date:** {str(r['created_at'])[:10]}",
                 inline=False
             )
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="delete_rating", description="Delete a specific rating by ID / حذف تقييم محدد برقم التقييم")
     @app_commands.describe(rating_id="رقم التقييم المراد حذفه")
@@ -182,16 +184,18 @@ class StatsCog(commands.Cog):
         if not interaction.guild:
             return await interaction.response.send_message("❌ يرجى استخدام هذا الأمر داخل السيرفر.", ephemeral=True)
 
+        await interaction.response.defer()
         embed = self._build_leaderboard_embed(interaction.guild)
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="top", description="عرض صدارة وتوب طاقم الدعم الفني والنقاط (Top Staff Leaderboard)")
     async def top_slash(self, interaction: discord.Interaction):
         if not interaction.guild:
             return await interaction.response.send_message("❌ يرجى استخدام هذا الأمر داخل السيرفر.", ephemeral=True)
 
+        await interaction.response.defer()
         embed = self._build_leaderboard_embed(interaction.guild)
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     def _build_staff_profile_embed(self, guild: discord.Guild, member: discord.Member) -> discord.Embed:
         from bot.utils.permissions import PermissionHandler
@@ -309,12 +313,13 @@ class StatsCog(commands.Cog):
         if not interaction.guild:
             return await interaction.response.send_message("❌ يرجى استخدام هذا الأمر داخل السيرفر.", ephemeral=True)
 
+        await interaction.response.defer()
         target = staff or interaction.user
         if not isinstance(target, discord.Member):
             target = interaction.guild.get_member(target.id) or target
 
         embed = self._build_staff_profile_embed(interaction.guild, target)
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
     @commands.command(name="staff_info", aliases=["staff", "اداري", "مشرف", "طاقم", "بروفايل_اداري", "انجازات"])
     async def staff_info_prefix(self, ctx: commands.Context, staff: Optional[discord.Member] = None):

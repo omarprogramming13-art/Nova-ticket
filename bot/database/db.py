@@ -27,13 +27,13 @@ class DatabaseManager:
                 self.use_postgres = True
                 sys.stderr.write("[DB_INFO] Successfully connected to PostgreSQL database (Supabase)!\n")
             except Exception as e:
-                sys.stderr.write(f"[DB_WARNING] PostgreSQL connection failed ({e}). Falling back to local SQLite ({self.db_path})...\n")
-                self.use_postgres = False
+                sys.stderr.write(f"[DB_CRITICAL_ERROR] PostgreSQL connection failed: {e}. Aborting startup to prevent silent SQLite fallback.\n")
+                raise RuntimeError(f"PostgreSQL connection failed: {e}")
         else:
-            if not HAS_POSTGRES:
-                sys.stderr.write(f"[DB_INFO] psycopg2 is not installed in environment. Using local SQLite database ({self.db_path}).\n")
-            else:
-                sys.stderr.write(f"[DB_INFO] DATABASE_URL is not set. Using local SQLite database ({self.db_path}).\n")
+            if db_url and not HAS_POSTGRES:
+                sys.stderr.write("[DB_CRITICAL_ERROR] DATABASE_URL is set but psycopg2 is not installed!\n")
+                raise RuntimeError("DATABASE_URL is set but psycopg2 is missing.")
+            sys.stderr.write(f"[DB_INFO] DATABASE_URL is not set. Using local SQLite database ({self.db_path}) for local testing.\n")
             self.use_postgres = False
 
         try:
@@ -79,8 +79,8 @@ class DatabaseManager:
                 conn = self._get_postgres_connection(db_url)
                 return ("postgres", conn)
             except Exception as conn_err:
-                sys.stderr.write(f"[DB_CONN_ERROR] PostgreSQL connection failed ({conn_err}). Falling back to SQLite.\n")
-                return ("sqlite", self._get_sqlite_connection())
+                sys.stderr.write(f"[DB_CONN_CRITICAL] PostgreSQL connection failed ({conn_err}). Aborting to prevent silent SQLite fallback in production.\n")
+                raise RuntimeError(f"PostgreSQL connection failed: {conn_err}")
         else:
             return ("sqlite", self._get_sqlite_connection())
 

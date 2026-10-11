@@ -269,6 +269,14 @@ class TicketCategorySelect(Select):
             )
 
         try:
+            # 1.5 Check restricted roles
+            category = next((c for c in self.categories if str(c.get("id")) == category_id), None)
+            if category and "restricted_role_ids" in category and category["restricted_role_ids"]:
+                user_role_ids = [role.id for role in interaction.user.roles]
+                if not any(rid in user_role_ids for rid in category["restricted_role_ids"]):
+                    await interaction.response.defer(ephemeral=True)
+                    return await interaction.followup.send("❌ ليس لديك الصلاحية لفتح تذكرة في هذا القسم.", ephemeral=True)
+
             # 1. Check blacklist
             if db.is_blacklisted(user_id):
                 await interaction.response.defer(ephemeral=True)

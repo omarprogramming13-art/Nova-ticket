@@ -1,0 +1,6 @@
+{
+  "summary":  "Implementation plan for adding new ticket features: viewing deleted ticket info, restricting ticket claims by role, staff DM notifications for ratings, DM button in tickets, and automatic inactivity reminders.",
+  "updatedAt":  "2026-10-11T14:15:21.014214820Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}
