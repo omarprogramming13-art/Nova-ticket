@@ -230,7 +230,9 @@ class DatabaseManager:
                     category_points {int_type} DEFAULT 0,
                     evidence_enabled {int_type} DEFAULT 1,
                     form_answers {text_type} DEFAULT '',
-                    authorized_staff_id BIGINT DEFAULT NULL
+                    authorized_staff_id BIGINT DEFAULT NULL,
+                    transcript_url {text_type} DEFAULT NULL,
+                    claimed_at {text_type} DEFAULT NULL
                 )""",
                 f"""CREATE TABLE IF NOT EXISTS ticket_evidence (
                     id {pk_type},
@@ -417,6 +419,22 @@ class DatabaseManager:
                     cursor.execute("""
                         SELECT column_name 
                         FROM information_schema.columns 
+                        WHERE table_name='tickets' AND column_name='transcript_url';
+                    """)
+                    if not cursor.fetchone():
+                        cursor.execute("ALTER TABLE tickets ADD COLUMN transcript_url TEXT DEFAULT NULL;")
+
+                    cursor.execute("""
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_name='tickets' AND column_name='claimed_at';
+                    """)
+                    if not cursor.fetchone():
+                        cursor.execute("ALTER TABLE tickets ADD COLUMN claimed_at TEXT DEFAULT NULL;")
+
+                    cursor.execute("""
+                        SELECT column_name 
+                        FROM information_schema.columns 
                         WHERE table_name='guild_settings' AND column_name='auto_close_hours';
                     """)
                     if not cursor.fetchone():
@@ -446,6 +464,10 @@ class DatabaseManager:
                         cursor.execute("ALTER TABLE tickets ADD COLUMN department TEXT DEFAULT '';")
                     if "inactivity_warned" not in cols:
                         cursor.execute("ALTER TABLE tickets ADD COLUMN inactivity_warned INTEGER DEFAULT 0;")
+                    if "transcript_url" not in cols:
+                        cursor.execute("ALTER TABLE tickets ADD COLUMN transcript_url TEXT DEFAULT NULL;")
+                    if "claimed_at" not in cols:
+                        cursor.execute("ALTER TABLE tickets ADD COLUMN claimed_at TEXT DEFAULT NULL;")
 
                     cursor.execute("PRAGMA table_info(guild_settings)")
                     g_cols = [row[1] for row in cursor.fetchall()]
@@ -639,8 +661,13 @@ class DatabaseManager:
         closed_at = datetime.utcnow().isoformat() if status == 'closed' else None
         self._run_query("UPDATE tickets SET status = ?, closed_at = COALESCE(?, closed_at) WHERE channel_id = ?", (status, closed_at, channel_id))
 
+    def update_ticket_transcript_url(self, ticket_id: int, transcript_url: str):
+        self._run_query("UPDATE tickets SET transcript_url = ? WHERE id = ? OR channel_id = ?", (transcript_url, ticket_id, ticket_id))
+
     def claim_ticket(self, channel_id: int, staff_id: Optional[int]):
-        self._run_query("UPDATE tickets SET claimed_by = ? WHERE channel_id = ?", (staff_id, channel_id))
+        claimed_at = datetime.utcnow().isoformat() if staff_id else None
+        # When staff claims ticket, reset member_responded to 0 so inactivity timer starts tracking member response
+        self._run_query("UPDATE tickets SET claimed_by = ?, claimed_at = ?, member_responded = CASE WHEN ? IS NOT NULL THEN 0 ELSE member_responded END WHERE channel_id = ?", (staff_id, claimed_at, staff_id, channel_id))
 
     def authorize_ticket_staff(self, channel_id: int, staff_id: Optional[int]):
         self._run_query("UPDATE tickets SET authorized_staff_id = ? WHERE channel_id = ?", (staff_id, channel_id))

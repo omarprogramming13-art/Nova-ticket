@@ -25,7 +25,7 @@ class PermissionHandler:
         return user_id in owners
 
     @staticmethod
-    def is_staff(member: discord.Member) -> bool:
+    def is_staff(member: discord.Member, ticket_data: dict = None) -> bool:
         if not member:
             return False
         if PermissionHandler.is_bot_owner(member.id):
@@ -35,6 +35,35 @@ class PermissionHandler:
         if member.guild_permissions.administrator or member.guild_permissions.manage_channels or member.guild_permissions.manage_messages:
             return True
         
+        # Check if member has category-specific support roles from ticket
+        if ticket_data and member.guild:
+            panel_id = ticket_data.get("panel_id")
+            category_id = ticket_data.get("category_id")
+            if panel_id and category_id:
+                panel = db.get_panel_by_id(panel_id)
+                if panel:
+                    for cat in panel.get("categories", []):
+                        if str(cat.get("id")) == str(category_id):
+                            cat_roles = cat.get("support_role_ids", [])
+                            if not cat_roles and cat.get("support_role_id"):
+                                cat_roles = [cat.get("support_role_id")]
+                            user_role_ids = [r.id for r in member.roles]
+                            if any(rid and str(rid).isdigit() and int(rid) in user_role_ids for rid in cat_roles):
+                                return True
+                            break
+
+        # Check if member has any category support role across any panel in the guild
+        if member.guild:
+            user_role_ids = [r.id for r in member.roles]
+            panels = db.get_panels() or []
+            for p in panels:
+                for cat in p.get("categories", []):
+                    cat_roles = cat.get("support_role_ids", [])
+                    if not cat_roles and cat.get("support_role_id"):
+                        cat_roles = [cat.get("support_role_id")]
+                    if any(rid and str(rid).isdigit() and int(rid) in user_role_ids for rid in cat_roles):
+                        return True
+
         rank = PermissionHandler.get_member_rank(member)
         return rank >= PermissionHandler.ROLE_HIERARCHY["support"]
 

@@ -85,7 +85,7 @@ class TicketBot(commands.Bot):
                     if t.get("status") != "open":
                         continue
 
-                    last_staff = t.get("last_staff_message_at")
+                    last_staff = t.get("last_staff_message_at") or t.get("claimed_at")
                     if not last_staff:
                         continue
 

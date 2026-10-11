@@ -85,6 +85,42 @@ class FeedbackModal(Modal):
                             except Exception as ch_err:
                                 print(f"Could not send review embed to log channel: {ch_err}")
 
+            # Send DM directly to the rated staff member
+            if self.staff_id:
+                try:
+                    staff_user = None
+                    if hasattr(interaction, "client") and interaction.client:
+                        staff_user = interaction.client.get_user(self.staff_id)
+                        if not staff_user:
+                            try:
+                                staff_user = await interaction.client.fetch_user(self.staff_id)
+                            except Exception:
+                                staff_user = None
+
+                    if staff_user:
+                        star_symbols = "⭐" * self.stars
+                        dm_color = EmbedBuilder.COLOR_DANGER if self.stars <= 2 else (EmbedBuilder.COLOR_WARNING if self.stars == 3 else EmbedBuilder.COLOR_SUCCESS)
+                        staff_dm_embed = EmbedBuilder.create_embed(
+                            title="⭐ استلام تقييم جديد لخدمتك!",
+                            description=(
+                                f"مرحباً {staff_user.mention} 👋،\n"
+                                f"قام العضو {interaction.user.mention} (`{interaction.user.name}`) بتقييم أدائك في التذكرة رقم `#{self.ticket_id}`.\n\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"• **التقييم المستلم:** **`{self.stars}/5 ★`** ({star_symbols})\n"
+                                f"• **النقاط المضافة لرصيدك:** `+{awarded_points}` نقطة\n"
+                                f"• **تعليق / ملاحظة العميل:**\n"
+                                f"```{feedback_text}```\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"استمر في تقديم أفضل خدمة لأعضاء السيرفر! 🚀"
+                            ),
+                            color=dm_color
+                        )
+                        if interaction.guild and interaction.guild.icon:
+                            staff_dm_embed.set_footer(text=interaction.guild.name, icon_url=interaction.guild.icon.url)
+                        await staff_user.send(embed=staff_dm_embed)
+                except Exception as dm_err:
+                    print(f"Could not send rating DM to staff {self.staff_id}: {dm_err}")
+
             # Try deleting or disabling the rating request message
             if interaction.message:
                 try:

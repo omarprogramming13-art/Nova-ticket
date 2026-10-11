@@ -11,7 +11,8 @@ from bot.utils.logger import TicketLogger
 from bot.views.modal_views import (
     TransferTicketModal, ChangePriorityModal, PrioritySelectView, RenameTicketModal,
     ChangeDepartmentModal, ChangeOwnerModal, AddMemberModal,
-    RemoveMemberModal, InternalNoteModal, RatingModal, AddEvidenceModal, AuthorizeStaffModal
+    RemoveMemberModal, InternalNoteModal, RatingModal, AddEvidenceModal, AuthorizeStaffModal,
+    SendTicketOwnerDMModal
 )
 
 # 1. Base Class for Action Handling
@@ -77,7 +78,7 @@ class TicketActionBase(Select):
         ]
         
         if action in staff_actions:
-            if not PermissionHandler.is_staff(member) and not PermissionHandler.is_bot_owner(member.id):
+            if not PermissionHandler.is_staff(member, ticket_data=ticket) and not PermissionHandler.is_bot_owner(member.id):
                 return await interaction.response.send_message("❌ عفواً! هذه الخيارات والأوامر مخصصة فقط لإدارة وطاقم الدعم الفني.", ephemeral=True)
 
             # Restrict critical actions (delete is allowed for claimed staff as well)
@@ -102,9 +103,11 @@ class TicketActionBase(Select):
         if action != "restart" and not PermissionHandler.can_execute_action(guild, member, action, ticket_user_id, ticket_data=ticket):
             return await interaction.response.send_message(get_text("permission_denied", self.lang), ephemeral=True)
 
-        if action in ["transfer", "priority", "rename", "department", "owner", "add_member", "remove_member", "add_note", "rate_staff", "add_evidence", "authorize_staff"]:
+        if action in ["transfer", "priority", "rename", "department", "owner", "add_member", "remove_member", "add_note", "rate_staff", "add_evidence", "authorize_staff", "dm_ticket_owner"]:
             # These open modals, cannot defer
-            if action == "add_evidence":
+            if action == "dm_ticket_owner":
+                await interaction.response.send_modal(SendTicketOwnerDMModal(ticket, self.lang))
+            elif action == "add_evidence":
                 if not db.is_evidence_enabled(interaction.channel_id):
                     return await interaction.response.send_message("⚠️ ميزة إضافة الأدلة معطلة لهذه التذكرة حالياً من قبل الإدارة.", ephemeral=True)
                 await interaction.response.send_modal(AddEvidenceModal(ticket, self.lang))
@@ -254,10 +257,25 @@ class TicketActionBase(Select):
         
         settings = db.get_guild_settings(guild.id) or {}
         staff_roles = [settings.get("support_role_id"), settings.get("senior_support_role_id"), settings.get("admin_role_id"), settings.get("support_manager_role_id"), settings.get("owner_role_id")]
+        
+        # Include category specific support roles as well
+        panel_id = ticket.get("panel_id")
+        category_id = ticket.get("category_id")
+        if panel_id and category_id:
+            panel = db.get_panel_by_id(panel_id)
+            if panel:
+                for cat in panel.get("categories", []):
+                    if str(cat.get("id")) == str(category_id):
+                        cat_roles = cat.get("support_role_ids", [])
+                        if not cat_roles and cat.get("support_role_id"):
+                            cat_roles = [cat.get("support_role_id")]
+                        staff_roles.extend(cat_roles)
+                        break
+
         overwrites = interaction.channel.overwrites
         
-        for role_id in staff_roles:
-            if role_id:
+        for role_id in set(staff_roles):
+            if role_id and str(role_id).isdigit():
                 role = guild.get_role(int(role_id))
                 if role: overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=False)
         
@@ -267,7 +285,7 @@ class TicketActionBase(Select):
         if owner: overwrites[owner] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True)
         
         await interaction.channel.edit(overwrites=overwrites)
-        await interaction.followup.send(embed=EmbedBuilder.create_embed(title="📌 تم استلام التذكرة", description=f"تم استلام التذكرة بواسطة {member.mention}.", color=EmbedBuilder.COLOR_SUCCESS))
+        await interaction.followup.send(embed=EmbedBuilder.create_embed(title="📌 تم استلام التذكرة", description=f"تم استلام التذكرة بواسطة {member.mention}.\n*(أنت الآن المخول بالكتابة ومتابعة التذكرة مع العميل)*", color=EmbedBuilder.COLOR_SUCCESS))
         await TicketLogger.log_action(guild, ticket, "استلام التذكرة", member)
 
     async def _execute_unclaim(self, interaction, guild, member, ticket):
@@ -781,6 +799,7 @@ class StaffManagementSelect(TicketActionBase):
             discord.SelectOption(label="تحويل التذكرة إلى قسم آخر", value="department", emoji="🏢", description="نقل التذكرة إلى أحد أقسام اللوحة المعتمدة"),
             discord.SelectOption(label="تعديل أولوية التذكرة", value="priority", emoji="⚡", description="تحديد مستوى الأهمية (طارئة / عالية / متوسطة / منخفضة)"),
             discord.SelectOption(label="تغيير اسم روم التذكرة", value="rename", emoji="✏️", description="تعديل اسم القناة بالتنسيق المناسب"),
+            discord.SelectOption(label="إرسال رسالة خاصة لصاحب التذكرة", value="dm_ticket_owner", emoji="📩", description="إرسال رسالة مباشرة لخاص العضو باسمك كمرسل"),
             discord.SelectOption(label="نداء وتنبيه صاحب التذكرة", value="summon_member", emoji="🔔", description="إرسال منشن وتنبيه مباشر لصاحب التذكرة"),
             discord.SelectOption(label="تحويل التذكرة لموظف آخر", value="transfer", emoji="🔄", description="نقل مسؤولية التذكرة لعضو طاقم آخر"),
             discord.SelectOption(label="عرض وفحص الأدلة المرفقة", value="view_evidence", emoji="📸", description="استعراض قائمة الإثباتات والروابط المسجلة"),
@@ -822,6 +841,19 @@ class TicketControlView(View):
             return await interaction.followup.send("❌ تعذر العثور على بيانات هذه التذكرة.", ephemeral=True)
         handler = TicketActionBase(ticket, self.lang)
         await handler._execute_info(interaction, ticket)
+
+    @discord.ui.button(label="📩 إرسال خاص لصاحب التذكرة", style=discord.ButtonStyle.secondary, emoji="📩", custom_id="btn_dm_ticket_owner", row=3)
+    async def btn_dm_ticket_owner(self, interaction: discord.Interaction, button: discord.ui.Button):
+        ticket = db.get_ticket_by_channel(interaction.channel_id)
+        if not ticket:
+            return await interaction.response.send_message("❌ تعذر العثور على بيانات هذه التذكرة.", ephemeral=True)
+        if not PermissionHandler.is_staff(interaction.user, ticket_data=ticket) and not PermissionHandler.is_bot_owner(interaction.user.id):
+            return await interaction.response.send_message("❌ هذا الخيار مخصص لطاقم الدعم الفني فقط.", ephemeral=True)
+        claimed_by = ticket.get("claimed_by")
+        user_rank = PermissionHandler.get_member_rank(interaction.user)
+        if claimed_by and interaction.user.id != claimed_by and user_rank < PermissionHandler.ROLE_HIERARCHY["admin"] and not PermissionHandler.is_bot_owner(interaction.user.id):
+            return await interaction.response.send_message(f"❌ هذه التذكرة مستلمة من قبل <@{claimed_by}>، ولا يمكن إرسال رسائل خاصة إلا بواسطة المستلم أو مسؤول.", ephemeral=True)
+        await interaction.response.send_modal(SendTicketOwnerDMModal(ticket, self.lang))
 
     @discord.ui.button(label="💬 الردود التلقائية / السريعة", style=discord.ButtonStyle.primary, emoji="💬", custom_id="btn_quick_canned", row=3)
     async def btn_quick_canned(self, interaction: discord.Interaction, button: discord.ui.Button):

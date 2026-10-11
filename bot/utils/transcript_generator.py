@@ -277,7 +277,10 @@ class TranscriptGenerator:
                         color=EmbedBuilder.COLOR_INFO
                     )
                     file_for_trans = discord.File(file_name, filename=file_name)
-                    await trans_ch.send(embed=embed, file=file_for_trans)
+                    trans_msg = await trans_ch.send(embed=embed, file=file_for_trans)
+                    if trans_msg and trans_msg.attachments and ticket:
+                        attach_url = trans_msg.attachments[0].url
+                        db.update_ticket_transcript_url(ticket.get("id", channel.id), attach_url)
         except Exception as e:
             print(f"Error sending transcript to transcript_channel: {e}")
 

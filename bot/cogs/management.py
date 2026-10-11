@@ -41,7 +41,7 @@ class TicketManagementCog(commands.Cog):
         ]
         
         if action in staff_actions:
-            if not PermissionHandler.is_staff(member) and not PermissionHandler.is_bot_owner(member.id):
+            if not PermissionHandler.is_staff(member, ticket_data=ticket) and not PermissionHandler.is_bot_owner(member.id):
                 await interaction.response.send_message("❌ هذا الأمر مخصص فقط لإدارة وطاقم الدعم الفني.", ephemeral=True)
                 return False
 
@@ -61,12 +61,12 @@ class TicketManagementCog(commands.Cog):
 
     @app_commands.command(name="claim", description="Claim current ticket / استلام التذكرة")
     async def claim(self, interaction: discord.Interaction):
-        if not PermissionHandler.is_staff(interaction.user):
-            return await interaction.response.send_message("❌ غير مسموح لك باستخدام هذا الأمر.", ephemeral=True)
-
         ticket = db.get_ticket_by_channel(interaction.channel_id)
         if not ticket:
             return await interaction.response.send_message("❌ هذا ليس بقناة تذكرة صالحة.", ephemeral=True)
+
+        if not PermissionHandler.is_staff(interaction.user, ticket_data=ticket):
+            return await interaction.response.send_message("❌ غير مسموح لك باستخدام هذا الأمر.", ephemeral=True)
 
         if ticket.get("claimed_by"):
             return await interaction.response.send_message("⚠️ هذه التذكرة مستلمة بالفعل!", ephemeral=True)
@@ -86,9 +86,22 @@ class TicketManagementCog(commands.Cog):
         settings = db.get_guild_settings(guild.id) or {}
         staff_roles = [settings.get("support_role_id"), settings.get("senior_support_role_id"), settings.get("admin_role_id"), settings.get("support_manager_role_id"), settings.get("owner_role_id")]
         
+        panel_id = ticket.get("panel_id")
+        category_id = ticket.get("category_id")
+        if panel_id and category_id:
+            panel = db.get_panel_by_id(panel_id)
+            if panel:
+                for cat in panel.get("categories", []):
+                    if str(cat.get("id")) == str(category_id):
+                        cat_roles = cat.get("support_role_ids", [])
+                        if not cat_roles and cat.get("support_role_id"):
+                            cat_roles = [cat.get("support_role_id")]
+                        staff_roles.extend(cat_roles)
+                        break
+
         overwrites = interaction.channel.overwrites
-        for role_id in staff_roles:
-            if role_id:
+        for role_id in set(staff_roles):
+            if role_id and str(role_id).isdigit():
                 role = guild.get_role(int(role_id))
                 if role: overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=False)
         
@@ -638,6 +651,128 @@ class TicketManagementCog(commands.Cog):
         embed.add_field(name="📸 الأدلة المرفقة", value=info.get("evidence_urls") or "لا يوجد", inline=False)
         embed.add_field(name="📝 تفاصيل وحيثيات الموظف", value=info.get("staff_details") or "لا يوجد", inline=False)
         embed.add_field(name="📅 تاريخ الإغلاق", value=str(info.get("created_at")), inline=False)
+
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="ticket_info", description="عرض السجل والمعلومات الشاملة لأي تذكرة (محذوفة أو سابقة) برقمها")
+    @app_commands.describe(ticket_id="رقم / معرف التذكرة (Ticket ID)")
+    async def ticket_info(self, interaction: discord.Interaction, ticket_id: int):
+        if not PermissionHandler.is_staff(interaction.user) and not PermissionHandler.is_bot_owner(interaction.user.id):
+            return await interaction.response.send_message("❌ هذا الأمر مخصص لطاقم الدعم الفني والإدارة فقط.", ephemeral=True)
+
+        ticket = db.get_ticket_by_id(ticket_id)
+        if not ticket:
+            return await interaction.response.send_message(f"❌ لم يتم العثور على أي تذكرة مسجلة بالرقم `#{ticket_id}` في قاعدة البيانات.", ephemeral=True)
+
+        user_id = ticket.get("user_id")
+        claimed_by = ticket.get("claimed_by")
+        status = ticket.get("status", "unknown")
+        created_at = ticket.get("created_at", "غير محدد")
+        closed_at = ticket.get("closed_at") or "لم تُغلق بعد"
+        department = ticket.get("department") or ticket.get("category_id") or "عام"
+        priority = ticket.get("priority") or "متوسطة"
+        form_answers = ticket.get("form_answers") or ""
+        transcript_url = ticket.get("transcript_url")
+        channel_id = ticket.get("channel_id")
+
+        status_text = {
+            "open": "🟢 مفتوحة ونشطة",
+            "claimed": "🟡 مستلمة وقيد المتابعة",
+            "closed": "🔴 مغلقة ومؤرشفة",
+            "deleted": "🗑️ محذوفة من السيرفر",
+            "on_hold": "⏸️ معلقة مؤقتاً"
+        }.get(status, f"📌 {status}")
+
+        embed = EmbedBuilder.create_embed(
+            title=f"🎫 السجل الكامل للتذكرة #{ticket_id}",
+            description=(
+                f"نظرة شاملة ومفصلة على بيانات التذكرة وعملياتها وسجل أحداثها:\n\n"
+                f"• **الحالة الحالية:** {status_text}\n"
+                f"• **صاحب التذكرة:** <@{user_id}> (`{user_id}`)\n"
+                f"• **الموظف المستلم:** {f'<@{claimed_by}> (`{claimed_by}`)' if claimed_by else '*(لم تُستلم)*'}\n"
+                f"• **القسم / التصنيف:** `{department}`\n"
+                f"• **مستوى الأولوية:** `{priority}`\n"
+                f"• **تاريخ الفتح:** `{created_at[:19] if created_at else 'غير محدد'}`\n"
+                f"• **تاريخ الإغلاق / الحذف:** `{closed_at[:19] if closed_at else 'لم تُغلق'}`"
+            ),
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+
+        # 1. Opening info and Form answers
+        if form_answers and form_answers.strip():
+            embed.add_field(
+                name="📝 بيانات فتح التذكرة والنموذج التفاعلي:",
+                value=form_answers[:1024],
+                inline=False
+            )
+
+        # 2. Audit logs / Actions & Changes performed on this ticket
+        audits = db.get_audit_logs(ticket_id)
+        if audits:
+            audit_lines = []
+            for a in audits[-10:]:
+                act = a.get("action", "إجراء")
+                exec_id = a.get("executor_id")
+                dt = a.get("created_at", "")[:16]
+                det = f" - {a.get('details')}" if a.get("details") else ""
+                audit_lines.append(f"• **{act}** بواسطة <@{exec_id}>{det} `({dt})`")
+            embed.add_field(
+                name=f"⚙️ الأوامر والتغييرات المنفذة على التذكرة ({len(audits)} عملية مسجلة):",
+                value="\n".join(audit_lines[:8]) if audit_lines else "لا توجد تفاصيل",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="⚙️ الأوامر والتغييرات المنفذة:",
+                value="*لا توجد عمليات مسجلة في سجل التدقيق لهذه التذكرة.*",
+                inline=False
+            )
+
+        # 3. Evidence
+        ev_list = db.get_ticket_evidence(ticket_id)
+        if ev_list:
+            ev_lines = []
+            for idx, ev in enumerate(ev_list[:5], 1):
+                ev_url = ev.get("evidence_url", "")
+                ev_note = ev.get("note") or "دليل"
+                ev_user = ev.get("user_id")
+                ev_lines.append(f"• **دليل #{idx}:** [{ev_note}]({ev_url}) بواسطة <@{ev_user}>")
+            embed.add_field(
+                name=f"📸 الأدلة والإثباتات المرفقة ({len(ev_list)} دليل):",
+                value="\n".join(ev_lines),
+                inline=False
+            )
+
+        # 4. Rating info if rated
+        rating = db.get_rating_by_ticket_id(ticket_id)
+        if rating:
+            stars = rating.get("stars", 5)
+            feedback = rating.get("feedback") or "بدون تعليق"
+            embed.add_field(
+                name="⭐ تقييم العضو للخدمة:",
+                value=f"• النجوم: **{'⭐' * stars}** ({stars}/5)\n• التعليق: `{feedback}`",
+                inline=False
+            )
+
+        # 5. Transcript link / URL
+        if transcript_url:
+            embed.add_field(
+                name="📄 رابط نسخة أرشيف التذكرة (Transcript):",
+                value=f"[🔗 اضغط هنا لتحميل وعرض المحادثة الكاملة]({transcript_url})",
+                inline=False
+            )
+        else:
+            settings = db.get_guild_settings(interaction.guild_id) or {}
+            trans_ch_id = settings.get("transcript_channel_id")
+            if trans_ch_id:
+                embed.add_field(
+                    name="📄 أرشيف المحادثة (Transcript):",
+                    value=f"يتم إرسال ملف المحادثة تلقائياً في روم الأرشيف: <#{trans_ch_id}>",
+                    inline=False
+                )
+
+        if interaction.guild and interaction.guild.icon:
+            embed.set_footer(text=interaction.guild.name, icon_url=interaction.guild.icon.url)
 
         await interaction.response.send_message(embed=embed)
 

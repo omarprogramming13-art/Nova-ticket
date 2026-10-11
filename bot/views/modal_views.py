@@ -711,3 +711,86 @@ class AuthorizeStaffModal(Modal):
         )
 
 
+class SendTicketOwnerDMModal(Modal):
+    def __init__(self, ticket: dict, lang: str = "ar"):
+        super().__init__(title="📩 إرسال رسالة خاصة لصاحب التذكرة")
+        self.ticket = ticket
+        self.lang = lang
+
+        self.msg_input = TextInput(
+            label="نص الرسالة الخاصة",
+            placeholder="اكتب الرسالة التي تريد من البوت إرسالها إلى خاص العضو مباشرة...",
+            style=discord.TextStyle.paragraph,
+            required=True,
+            max_length=1500
+        )
+        self.add_item(self.msg_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        ticket_user_id = self.ticket.get("user_id")
+        if not ticket_user_id:
+            return await interaction.response.send_message("❌ تعذر تحديد صاحب التذكرة.", ephemeral=True)
+
+        user_obj = interaction.guild.get_member(ticket_user_id) if interaction.guild else None
+        if not user_obj:
+            try:
+                user_obj = await interaction.client.fetch_user(ticket_user_id)
+            except Exception:
+                user_obj = None
+
+        if not user_obj:
+            return await interaction.response.send_message("❌ تعذر العثور على حساب صاحب التذكرة لإرسال الرسالة إليه.", ephemeral=True)
+
+        message_content = self.msg_input.value.strip()
+
+        dm_embed = EmbedBuilder.create_embed(
+            title=f"📩 رسالة جديدة من الدعم الفني • تذكرة #{self.ticket.get('id', '')}",
+            description=(
+                f"مرحباً {user_obj.mention} 👋،\n"
+                f"لديك رسالة خاصة جديدة بخصوص تذكرتك في سيرفر **{interaction.guild.name if interaction.guild else 'الدعم الفني'}**:\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"{message_content}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"👤 **مرسل الرسالة (الموظف المستلم):** {interaction.user.mention} (`{interaction.user.name}`)\n"
+                f"🎫 **التذكرة:** <#{interaction.channel_id}>"
+            ),
+            color=EmbedBuilder.COLOR_PRIMARY
+        )
+        if interaction.guild and interaction.guild.icon:
+            dm_embed.set_footer(text=interaction.guild.name, icon_url=interaction.guild.icon.url)
+
+        try:
+            await user_obj.send(embed=dm_embed)
+            await interaction.response.send_message(
+                f"✅ **تم إرسال الرسالة الخاصة بنجاح إلى {user_obj.mention}!**\n"
+                f"• تم توضيح هويتك كمرسل للرسالة ({interaction.user.mention}).",
+                ephemeral=True
+            )
+            # Log in channel as well for transparency
+            log_embed = EmbedBuilder.create_embed(
+                title="📩 تم إرسال رسالة خاصة إلى صاحب التذكرة",
+                description=(
+                    f"قام الموظف {interaction.user.mention} بإرسال رسالة تنبيهية خاصة إلى صاحب التذكرة {user_obj.mention}:\n\n"
+                    f"```{message_content}```"
+                ),
+                color=EmbedBuilder.COLOR_INFO
+            )
+            await interaction.channel.send(embed=log_embed)
+            await TicketLogger.log_action(
+                guild=interaction.guild,
+                ticket=self.ticket,
+                action_name="إرسال رسالة خاصة",
+                executor=interaction.user,
+                details=f"تم إرسال DM لصاحب التذكرة: {message_content[:100]}"
+            )
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                f"⚠️ **تعذر إرسال الرسالة في الخاص!**\n"
+                f"يبدو أن العضو {user_obj.mention} قام بإغلاق الرسائل الخاصة (DMs) أو حظر البوت.",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.response.send_message(f"❌ حدث خطأ أثناء إرسال الرسالة: {e}", ephemeral=True)
+
+
+
