@@ -212,6 +212,7 @@ class TicketQuestionsModal(Modal):
 
 class TicketCategorySelect(Select):
     def __init__(self, categories: list, panel_id: int, lang: str = "ar"):
+        self.categories = categories
         self.panel_id = panel_id
         self.lang = lang
         options = []

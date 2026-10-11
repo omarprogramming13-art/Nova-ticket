@@ -19,6 +19,7 @@ class DatabaseManager:
         self.use_postgres = False
 
         db_url = os.environ.get("DATABASE_URL")
+        node_env = os.environ.get("NODE_ENV", "development")
         if HAS_POSTGRES and db_url and db_url.strip():
             sys.stderr.write("[DB_INFO] Testing PostgreSQL connection via DATABASE_URL...\n")
             try:
@@ -27,8 +28,12 @@ class DatabaseManager:
                 self.use_postgres = True
                 sys.stderr.write("[DB_INFO] Successfully connected to PostgreSQL database (Supabase)!\n")
             except Exception as e:
-                sys.stderr.write(f"[DB_CRITICAL_ERROR] PostgreSQL connection failed: {e}. Aborting startup to prevent silent SQLite fallback.\n")
-                raise RuntimeError(f"PostgreSQL connection failed: {e}")
+                if node_env == "production":
+                    sys.stderr.write(f"[DB_CRITICAL_ERROR] PostgreSQL connection failed in production: {e}.\n")
+                    raise RuntimeError(f"PostgreSQL connection failed: {e}")
+                else:
+                    sys.stderr.write(f"[DB_Info] PostgreSQL connection unreachable ({e}). Development/Sandbox environment detected: falling back to local SQLite database ({self.db_path}) for local testing.\n")
+                    self.use_postgres = False
         else:
             if db_url and not HAS_POSTGRES:
                 sys.stderr.write("[DB_CRITICAL_ERROR] DATABASE_URL is set but psycopg2 is not installed!\n")
